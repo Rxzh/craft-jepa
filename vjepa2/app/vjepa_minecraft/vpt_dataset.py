@@ -34,6 +34,7 @@ def init_vpt_dataloader(
     num_workers=10,
     pin_mem=True,
     persistent_workers=True,
+    action_scaler=None,
 ):
     """
     Initializes the WebDataset-based data loader for VPT.
@@ -70,7 +71,8 @@ def init_vpt_dataloader(
         frames_per_clip=frames_per_clip,
         fps=fps,
         frameskip=frameskip,
-        transform=vjepa_transform
+        transform=vjepa_transform,
+        action_scaler=action_scaler,
     )
 
     # --- 1.3. Build the WebDataset Pipeline ---
@@ -131,6 +133,8 @@ def decode_sample(sample):
         json_string = json_bytes.decode('utf-8')
         # .jsonl is lines of json objects.
         action_list = [json.loads(line) for line in json_string.strip().split('\n')]
+        
+        # This DataFrame will have object columns for 'mouse' and 'keyboard'
         actions_df = pd.DataFrame(action_list)
         sample['actions_df'] = actions_df
 
@@ -164,11 +168,29 @@ class ProcessVPT:
     2. Action processing (aligning actions to frames, calculating diffs)
     3. Video transformation
     """
-    def __init__(self, frames_per_clip=16, fps=5, frameskip=2, transform=None):
+    def __init__(self, frames_per_clip=16, fps=5, frameskip=2, transform=None, action_scaler=None):
         self.frames_per_clip = frames_per_clip
         self.fps = fps
         self.frameskip = frameskip  # V-JEPA 2-AC's `tubelet_size`
         self.transform = transform
+        self.action_scaler = action_scaler
+
+        # --- Define Action Vocabulary ---
+        # Based on VPT dataset exploration.
+        # **EDIT THIS LIST** to match all keys you want to model.
+        self.KEYBOARD_KEYS = [
+            'W', 'A', 'S', 'D', 'Space', 'Shift', 'Sprint', 'E', 
+            # DROID keys for reference (may or may not be in VPT):
+            # 'attack', 'back', 'forward', 'jump', 'left', 
+            # 'right', 'sneak', 'sprint', 'use'
+        ]
+        
+        # **EDIT THIS LIST** for mouse buttons
+        self.MOUSE_BUTTONS = ['left', 'right', 'middle']
+        
+        # Hotbar has 9 slots (0-8)
+        self.HOTBAR_SIZE = 9
+
 
     def __call__(self, sample):
         """Processes a single decoded sample."""
@@ -190,28 +212,40 @@ class ProcessVPT:
             
             # Total number of frames needed *before* sampling
             nframes = int(fpc * fstp)
-            vlen = len(vr) # Total frames in video
-
-            # Check if video is long enough
-            if vlen < nframes:
-                logger.debug(f"Skipping short video: {key}, {vlen=}, {nframes=}")
-                return None
             
-            # Check for action data mismatch
-            if vlen != len(actions_df):
+            vlen_total = len(vr)
+            alen_total = len(actions_df)
+
+            # --- 
+            # MODIFICATION: Handle 6001 frames vs 6000 actions
+            # We expect N actions for N+1 frames (e.g., 6000 actions, 6001 frames)
+            # The N actions correspond to frames 0...N-1
+            # The last frame (N) has no action data
+            # ---
+            if vlen_total != alen_total + 1:
                  logger.debug(f"Skipping video: {key}, frame/action mismatch "
-                              f"({vlen} frames vs {len(actions_df)} actions)")
+                              f"({vlen_total} frames vs {alen_total} actions)")
                  return None
 
+            # Usable length is the number of actions (e.g., 6000)
+            # We can sample frames from index 0 to alen_total - 1
+            vlen_usable = alen_total 
+
+            if vlen_usable < nframes:
+                logger.debug(f"Skipping short video: {key}, {vlen_usable=}, {nframes=}")
+                return None
+            
             # Sample a random window (end frame, start frame)
-            ef = np.random.randint(nframes, vlen)
+            # `high` is exclusive, so `vlen_usable + 1` makes the max
+            # possible `ef` equal to `vlen_usable` (e.g., 6000)
+            ef = np.random.randint(nframes, vlen_usable + 1) 
             sf = ef - nframes
             
             # Get the indices of frames to sample
             indices = np.arange(sf, sf + nframes, fstp).astype(np.int64)
             
-            # Ensure indices are within bounds and we have enough
-            indices = indices[indices < vlen]
+            # Ensure indices are within bounds
+            indices = indices[indices < vlen_usable] # Max index is vlen_usable - 1
             if len(indices) < fpc:
                  logger.debug(f"Skipping video (not enough frames after sampling): {key}")
                  return None
@@ -225,55 +259,55 @@ class ProcessVPT:
             
             # 2.1. Get states corresponding to the sampled video frames
             sampled_states_df = actions_df.iloc[indices]
-
-            # 2.2. Sub-sample *these* states by `frameskip` (e.g., tubelet_size)
-            # This matches the DROID logic: `states = states[indices, :][:: self.frameskip]`
-            sub_sampled_states_df = sampled_states_df.iloc[::self.frameskip]
             
-            # 2.3. Calculate action diffs (replaces `poses_to_diffs`)
-            # This takes T states and returns T-1 actions
+            # 2.2. Sub-sample *both* the states AND the video buffer by `frameskip`
+            sub_sampled_states_df = sampled_states_df.iloc[::self.frameskip] # 100 states
+            sub_sampled_buffer = buffer[::self.frameskip] # 100 frames
+            
+            # 2.3. Calculate action diffs from the sub-sampled states
+            # This takes 100 states and returns 99 actions
             vpt_actions_np = self.vpt_states_to_diffs(sub_sampled_states_df)
 
             # --- 3. Video Transform ---
             if self.transform:
-                buffer = self.transform(buffer)  # (T, C, H, W) tensor
+                # Apply transform to the *sub-sampled* buffer
+                sub_sampled_buffer = self.transform(sub_sampled_buffer)  
             
             # --- 4. Prepare Final Output ---
             actions_tensor = torch.from_numpy(vpt_actions_np).float()
             
-            # Also return the sub-sampled states, just like the DROID loader
-            # **ADJUST THESE COLUMNS** based on your needs
             state_cols = ['yaw', 'pitch'] 
             states_np = sub_sampled_states_df[state_cols].values
             states_tensor = torch.from_numpy(states_np).float()
 
             return {
-                "video_frames": buffer,
+                "video_frames": sub_sampled_buffer, 
                 "actions": actions_tensor,
                 "states": states_tensor
             }
+            # ---
+            # END OF FIX
+            # ---
 
         except Exception as e:
             logger.warning(f"Error processing sample {sample.get('__key__', 'N/A')}: {e}")
-            # import traceback
-            # traceback.print_exc()
             return None
 
     def vpt_states_to_diffs(self, states_df):
         """
         Calculates action "diffs" from a DataFrame of states.
-        This is the critical adaptation of `poses_to_diffs` for VPT data.
+        This is the critical adaptation for VPT data, which uses
+        object columns for 'mouse' and 'keyboard'.
         
-        **!! ATTENTION !!**
-        You MUST verify the column names in your .jsonl file and
-        adjust the keys (e.g., 'yaw', 'mouse_dx') in this function.
+        Takes T states and returns (T-1) actions.
         """
         
-        # --- 1. Continuous states that need diffs (e.g., camera angle) ---
-        # Assuming 'yaw' and 'pitch' are in RADIANS
+        # --- 1. Continuous states that need diffs (camera angle) ---
+        # Get (T,) arrays
         yaw = states_df['yaw'].values
         pitch = states_df['pitch'].values
         
+        # Get (T-1,) arrays of diffs
         yaw_diff = yaw[1:] - yaw[:-1]
         pitch_diff = pitch[1:] - pitch[:-1]
         
@@ -281,30 +315,83 @@ class ProcessVPT:
         yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
         pitch_diff = (pitch_diff + np.pi) % (2 * np.pi) - np.pi
 
-        # --- 2. Actions that are already diffs (mouse) or discrete (keys) ---
-        # We take the action from the *start* of the interval (T-1 actions)
-        mouse_dx = states_df['mouse_dx'].values[:-1]
-        mouse_dy = states_df['mouse_dy'].values[:-1]
+        # --- 2. Continuous actions that are already diffs (mouse dx, dy) ---
+        # Get (T,) Series of dicts
+        mouse_states = states_df['mouse']
         
-        # --- 3. Discrete keyboard/mouse button presses ---
-        # **ADJUST THIS LIST** to match all your action columns
-        key_cols = [
-            'attack', 'back', 'forward', 'jump', 'left', 
-            'right', 'sneak', 'sprint', 'use'
-        ]
-        # Filter for keys that actually exist in the dataframe
-        key_cols = [col for col in key_cols if col in states_df.columns]
-        key_presses = states_df[key_cols].values[:-1]  # (T-1, num_keys)
+        # Get (T-1,) arrays by taking diffs from the first T-1 states
+        mouse_dx = mouse_states.apply(lambda m: m.get('dx', 0.0)).values[:-1]
+        mouse_dy = mouse_states.apply(lambda m: m.get('dy', 0.0)).values[:-1]
 
-        # --- 4. Concatenate all actions into a single vector ---
-        # The final action vector shape will be (T_actions, D_actions)
-        # where T_actions = (frames_per_clip / frameskip) - 1
+        # --- A. Stack all continuous actions for normalization ---
+        # Shape will be (T-1, 4)
+        continuous_actions = np.stack([
+            mouse_dx,
+            mouse_dy,
+            yaw_diff,
+            pitch_diff
+        ], axis=1)
+
+        # --- B. Apply the scaler IF it was provided ---
+        if self.action_scaler is not None:
+            try:
+                continuous_actions = self.action_scaler.transform(continuous_actions)
+            except Exception as e:
+                logger.error(f"Failed to transform actions with scaler: {e}")
+                # Handle error, e.g., return zeros or raise
+                continuous_actions = np.zeros_like(continuous_actions)
+
+        
+        # --- 3. Discrete (Keyboard) - Multi-Hot Encoding ---
+        # Get (T-1,) Series of dicts
+        keyboard_states = states_df['keyboard'].values[:-1]
+        
+        # Create a (T-1, num_keys) zero array
+        key_presses_np = np.zeros((len(keyboard_states), len(self.KEYBOARD_KEYS)), dtype=np.float32)
+        
+        # Iterate and fill the multi-hot vector
+        for i, k_state in enumerate(keyboard_states):
+            pressed_keys = k_state.get('keys', []) # Get list of pressed keys
+            for j, key_name in enumerate(self.KEYBOARD_KEYS):
+                if key_name in pressed_keys:
+                    key_presses_np[i, j] = 1.0
+
+        # --- 4. Discrete (Mouse Buttons) - Multi-Hot Encoding ---
+        # Get (T-1,) Series of dicts
+        mouse_btn_states = states_df['mouse'].values[:-1]
+        
+        # Create a (T-1, num_buttons) zero array
+        mouse_presses_np = np.zeros((len(mouse_btn_states), len(self.MOUSE_BUTTONS)), dtype=np.float32)
+        
+        # Iterate and fill
+        for i, m_state in enumerate(mouse_btn_states):
+            # Use 'buttons' for held keys. Use 'newButtons' for single-tick presses
+            pressed_buttons = m_state.get('buttons', []) 
+            for j, button_name in enumerate(self.MOUSE_BUTTONS):
+                if button_name in pressed_buttons:
+                    mouse_presses_np[i, j] = 1.0
+
+        # --- 5. Discrete (Hotbar) - One-Hot Encoding ---
+        # Get (T-1,) array of integer indices (0-8)
+        hotbar_indices = states_df['hotbar'].values[:-1]
+        
+        # Create (T-1, 9) zero array
+        hotbar_one_hot_np = np.zeros((len(hotbar_indices), self.HOTBAR_SIZE), dtype=np.float32)
+        
+        # Fill with 1s at the correct index
+        hotbar_one_hot_np[np.arange(len(hotbar_indices)), hotbar_indices] = 1.0
+
+        # --- 6. Discrete (GUI Open) - Binary ---
+        is_gui_open_np = states_df['isGuiOpen'].values[:-1].astype(np.float32)
+
+        # --- 7. Concatenate all actions into a single vector ---
+        # Note the change: continuous_actions is now first
         actions = np.concatenate([
-            mouse_dx[:, np.newaxis],
-            mouse_dy[:, np.newaxis],
-            yaw_diff[:, np.newaxis],
-            pitch_diff[:, np.newaxis],
-            key_presses
+            continuous_actions, # This is the (T-1, 4) normalized block
+            key_presses_np,
+            mouse_presses_np,
+            hotbar_one_hot_np,
+            is_gui_open_np[:, np.newaxis]
         ], axis=1)
         
         return actions.astype(np.float32)
@@ -322,7 +409,8 @@ if __name__ == "__main__":
 
     # --- Configuration ---
     # !! IMPORTANT: Update this path !!
-    DATA_PATH = "path/to/your/vpt-shards-{000000..000001}.tar" # Use a small subset for testing
+    # Use a small subset of shards for testing (e.g., 2 files)
+    DATA_PATH = "path/to/your/vpt-shards-{000000..000001}.tar" 
     
     BATCH_SIZE = 4
     FRAMES_PER_CLIP = 16
@@ -372,8 +460,10 @@ if __name__ == "__main__":
         logger.error(f"Error: {e}")
         logger.error("Please update the DATA_PATH variable in the __main__ block.")
     except KeyError as e:
-         logger.error(f"Error: Missing column {e} in your .jsonl data.")
-         logger.error("Please verify all column names in vpt_states_to_diffs().")
+         logger.error(f"Error: Missing data key {e}.")
+         logger.error("This could be a column in the DataFrame (e.g., 'hotbar')")
+         logger.error("OR a key in a dict (e.g., 'dx' in the 'mouse' column).")
+         logger.error("Please verify all keys in vpt_states_to_diffs().")
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         import traceback
