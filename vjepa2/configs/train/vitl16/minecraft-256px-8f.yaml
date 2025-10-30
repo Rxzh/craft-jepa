@@ -1,0 +1,94 @@
+#--- VPT-JEPA Action-Conditioned Post-Training Config ---
+#Based on the DROID AC config and V-JEPA ViT-L/16 model.
+#Note: action_embed_dim must match your vpt_states_to_diffs output.
+#--- SLURM / Infrastructure ---
+#(Update for your cluster)
+app: vpt_minecraft
+cpus_per_task: 12
+folder: /your_folder/vpt_jepa/vit_l_16-256px-16f
+mem_per_gpu: 220G
+nodes: 4
+tasks_per_node: 8
+#--- Data Config ---
+data:
+  batch_size: 8
+  crop_size: 256
+
+#Use a glob string for all your WebDataset shards
+  datasets:
+    # dataset paths
+    - /path/to/your/vpt-shards-{000000..000123}.tar
+  dataset_fpcs:
+  - 16  # Corresponds to frames_per_clip
+  fps: 5
+  num_workers: 12
+  patch_size: 16
+  pin_mem: true
+  tubelet_size: 2 # Corresponds to frameskip
+
+#--- Data Augmentation Config ---
+#Note: Your vpt_dataset.py must be updated to accept and use the transform object for these augs to take effect.
+data_aug:
+  auto_augment: false
+  horizontal_flip: false # Minecraft UI should not be flipped
+  motion_shift: false
+  random_resize_aspect_ratio:
+  - 0.75
+  - 1.33 # Standard V-JEPA
+  random_resize_scale:
+  - 0.3 # Standard V-JEPA
+  - 1.0
+  reprob: 0.0
+
+#--- Loss Config ---
+loss:
+  auto_steps: 2
+  loss_exp: 1.0
+  normalize_reps: true
+  reg_coeff: 0.0
+
+#--- Meta Config ---
+meta:
+  dtype: bfloat16
+  eval_freq: 100
+  load_predictor: false
+  #--- CHECKPOINT ---
+  #Path to your pretrained V-JEPA (e.g., ViT-L/16) checkpoint
+  pretrain_checkpoint: /your_vjepa2_checkpoints/vjepa_vit-l-16.pt
+  context_encoder_key: target_encoder
+  target_encoder_key: target_encoder
+  #--- END CHECKPOINT ---
+  resume_checkpoint: null
+  save_every_freq: 25
+  seed: 239
+  use_sdpa: true
+
+#--- Model Config ---
+model:
+  model_name: vit_l_16 # For V-JEPA ViT-L/16
+  pred_depth: 24
+  pred_embed_dim: 1024 # Predictor embed dim
+  pred_is_frame_causal: true
+  pred_num_heads: 16
+  uniform_power: true
+  use_activation_checkpointing: true
+  #--- CRITICAL ---
+  use_extrinsics: false # VPT data does not have this
+  action_embed_dim: 13
+  #Must match the output of vpt_states_to_diffs
+  #e.g., 1(dx) + 1(dy) + 1(dyaw) + 1(dpitch) + 9(keys) = 13
+  #--- END CRITICAL ---
+  use_rope: true
+
+
+#Optimization Config ---
+optimization:
+  anneal: 15
+  epochs: 315
+  final_lr: 0.0
+  final_weight_decay: 0.04
+  ipe: 300 # Iterations per epoch, tune based on dataset size
+  lr: 0.000425
+  start_lr: 0.000075
+  warmup: 15
+  weight_decay: 0.04
