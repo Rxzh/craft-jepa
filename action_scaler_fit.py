@@ -8,10 +8,11 @@ from vjepa2.app.vjepa_minecraft.vpt_dataset import init_vpt_dataloader
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
-DATA_PATH = "shard-000024.tar"
+DATA_PATH = "VPT/shard-0000*.tar" #first 100 shards only
 SCALER_PATH = "vpt_action_scaler.pkl"
-FIT_BATCH_SIZE = 16
+FIT_BATCH_SIZE = 1
 NUM_WORKERS = 0
+
 
 def fit_action_scaler(data_path, scaler_save_path):
     """
