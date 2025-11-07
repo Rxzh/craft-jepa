@@ -251,3 +251,40 @@ def init_opt(
     )
     scaler = torch.cuda.amp.GradScaler() if mixed_precision else None
     return optimizer, scaler, scheduler, wd_scheduler
+
+
+
+
+
+def modify_keyboard_on_change(row):
+    """
+    Checks if the 'hotbar_changed' flag is True for this row.
+    If it is, it adds the appropriate keypress to the 'keys' list.
+    """
+    # Get the keyboard dictionary. Must make a copy to avoid modifying
+    # the original DataFrame during the .apply() operation.
+    new_keyboard_dict = row['keyboard'].copy()
+    
+    if row['hotbar_changed']:
+        # The new hotbar value is in 'next_hotbar'.
+        # We convert to int just in case it's a float (e.g., 8.0)
+        new_hotbar_val = int(row['next_hotbar'])
+        
+        # Format the key string based on your example (e.g., "key.keyboard.8")
+        key_to_press = f"key.keyboard.{new_hotbar_val}"
+        
+        # Get the current list of keys, making a copy to modify it
+        new_keys_list = new_keyboard_dict.get('keys', []).copy()
+        
+
+        if key_to_press in new_keys_list:
+            # If the key is already present, we don't add it again
+            return new_keyboard_dict
+        
+        # Add the new keypress
+        new_keys_list.append(key_to_press)
+        
+        # Update the dictionary
+        new_keyboard_dict['keys'] = new_keys_list
+        
+    return new_keyboard_dict

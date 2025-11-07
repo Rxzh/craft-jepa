@@ -11,6 +11,7 @@ import torch.utils.data
 import webdataset as wds
 from decord import VideoReader, cpu
 from torchvision import transforms as T
+from utils import modify_keyboard_on_change
 
 # --- Setup ---
 logger = getLogger(__name__)
@@ -175,21 +176,19 @@ class ProcessVPT:
         self.transform = transform
         self.action_scaler = action_scaler
 
-        # --- Define Action Vocabulary ---
-        # Based on VPT dataset exploration.
-        # **EDIT THIS LIST** to match all keys you want to model.
-        self.KEYBOARD_KEYS = [
-            'W', 'A', 'S', 'D', 'Space', 'Shift', 'Sprint', 'E', 
-            # DROID keys for reference (may or may not be in VPT):
-            # 'attack', 'back', 'forward', 'jump', 'left', 
-            # 'right', 'sneak', 'sprint', 'use'
-        ]
+        # Keyboard actions
+        self.KEYBOARD_KEYS =    [f'key.keyboard.{i}' for i in range(1,10)] + \
+                                [f'key.keyboard.{x}' for x in ['w', 'a', 's', 'd', 'space']] + \
+                                [f'key.keyboard.{x}' for x in ['q','f']] + \
+                                [f'key.keyboard.{x}' for x in ['e']] + \
+                                [f'key.keyboard.{x}' for x in ['escape']] + \
+                                [f'key.keyboard.{x}' for x in ['left.shift', 'right.shift', 'left.control', ]] 
         
         # **EDIT THIS LIST** for mouse buttons
-        self.MOUSE_BUTTONS = ['left', 'right', 'middle']
+        self.MOUSE_BUTTONS = [0, 1, 2]  # Left, Right, Middle buttons
         
         # Hotbar has 9 slots (0-8)
-        self.HOTBAR_SIZE = 9
+        self.HOTBAR_SIZE = 9 #hotbar is not an input but a state
 
 
     def __call__(self, sample):
@@ -216,12 +215,10 @@ class ProcessVPT:
             vlen_total = len(vr)
             alen_total = len(actions_df)
 
-            # --- 
-            # MODIFICATION: Handle 6001 frames vs 6000 actions
+            # Handle 6001 frames vs 6000 actions
             # We expect N actions for N+1 frames (e.g., 6000 actions, 6001 frames)
             # The N actions correspond to frames 0...N-1
             # The last frame (N) has no action data
-            # ---
             if vlen_total != alen_total + 1:
                  logger.debug(f"Skipping video: {key}, frame/action mismatch "
                               f"({vlen_total} frames vs {alen_total} actions)")
@@ -256,7 +253,7 @@ class ProcessVPT:
             buffer = vr.get_batch(indices).asnumpy()  # (T, H, W, C)
 
             # --- 2. Action Processing (from DROID `loadvideo_decord`) ---
-            
+    
             # 2.1. Get states corresponding to the sampled video frames
             sampled_states_df = actions_df.iloc[indices]
             
@@ -285,9 +282,7 @@ class ProcessVPT:
                 "actions": actions_tensor,
                 "states": states_tensor
             }
-            # ---
-            # END OF FIX
-            # ---
+
 
         except Exception as e:
             logger.warning(f"Error processing sample {sample.get('__key__', 'N/A')}: {e}")
@@ -301,6 +296,13 @@ class ProcessVPT:
         
         Takes T states and returns (T-1) actions.
         """
+
+        states_df['next_hotbar'] = states_df['hotbar'].shift(-1)
+        states_df['hotbar_changed'] = (states_df['hotbar'] != states_df['next_hotbar']) & states_df['next_hotbar'].notna()
+        states_df['keyboard'] = states_df.apply(modify_keyboard_on_change, axis=1) # this change hotbar changes from wheel to key press
+        states_df = states_df.drop(columns=['next_hotbar', 'hotbar_changed'])
+
+
         
         # --- 1. Continuous states that need diffs (camera angle) ---
         # Get (T,) arrays
@@ -371,18 +373,25 @@ class ProcessVPT:
                 if button_name in pressed_buttons:
                     mouse_presses_np[i, j] = 1.0
 
+
+        # Helper variable for the number of action vectors
+        num_actions = len(mouse_btn_states) # This is (T-1)
+
         # --- 5. Discrete (Hotbar) - One-Hot Encoding ---
-        # Get (T-1,) array of integer indices (0-8)
-        hotbar_indices = states_df['hotbar'].values[:-1]
-        
-        # Create (T-1, 9) zero array
-        hotbar_one_hot_np = np.zeros((len(hotbar_indices), self.HOTBAR_SIZE), dtype=np.float32)
-        
-        # Fill with 1s at the correct index
-        hotbar_one_hot_np[np.arange(len(hotbar_indices)), hotbar_indices] = 1.0
+        if 'hotbar' in states_df.columns:
+            hotbar_indices = states_df['hotbar'].values[:-1]
+            hotbar_one_hot_np = np.zeros((num_actions, self.HOTBAR_SIZE), dtype=np.float32)
+            hotbar_one_hot_np[np.arange(num_actions), hotbar_indices] = 1.0
+        else:
+            # 'hotbar' column is missing. Create a default vector of all zeros.
+            hotbar_one_hot_np = np.zeros((num_actions, self.HOTBAR_SIZE), dtype=np.float32)
 
         # --- 6. Discrete (GUI Open) - Binary ---
-        is_gui_open_np = states_df['isGuiOpen'].values[:-1].astype(np.float32)
+        if 'isGuiOpen' in states_df.columns:
+            is_gui_open_np = states_df['isGuiOpen'].values[:-1].astype(np.float32)
+        else:
+            # 'isGuiOpen' column is missing. Default to 0.0 (GUI is closed).
+            is_gui_open_np = np.zeros(num_actions, dtype=np.float32)
 
         # --- 7. Concatenate all actions into a single vector ---
         # Note the change: continuous_actions is now first
@@ -402,14 +411,11 @@ class ProcessVPT:
 # --------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Configure logging
+    
     import logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger()
 
-    # --- Configuration ---
-    # !! IMPORTANT: Update this path !!
-    # Use a small subset of shards for testing (e.g., 2 files)
     DATA_PATH = "path/to/your/vpt-shards-{000000..000001}.tar" 
     
     BATCH_SIZE = 4
@@ -420,7 +426,6 @@ if __name__ == "__main__":
     NUM_WORKERS = 0 # Set to 0 for initial debugging, then increase
 
     # --- Initialize Loader ---
-    # We run in a single-process mode (world_size=1, rank=0) for this test
     try:
         data_loader, _ = init_vpt_dataloader(
             data_path=DATA_PATH,
@@ -434,11 +439,9 @@ if __name__ == "__main__":
             num_workers=NUM_WORKERS,
         )
 
-        # --- Fetch a Batch ---
         logger.info("Fetching one batch...")
         batch = next(iter(data_loader))
 
-        # --- Inspect the Batch ---
         video_tensor = batch['video_frames']
         actions_tensor = batch['actions']
         states_tensor = batch['states']
