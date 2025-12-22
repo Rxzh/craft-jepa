@@ -160,23 +160,17 @@ def decode_sample(sample):
 
 class ProcessVPT:
     """
-    This class adapts the logic from `DROIDVideoDataset.__getitem__`
-    and `loadvideo_decord` for the WebDataset pipeline.
-    
-    It takes a decoded sample (with 'video_reader' and 'actions_df')
-    and performs:
-    1. Frame sampling (random window, FPS-based indexing)
-    2. Action processing (aligning actions to frames, calculating diffs)
-    3. Video transformation
+    Adapts DROID/VPT logic for WebDataset with V-JEPA tubelet aggregation.
     """
     def __init__(self, frames_per_clip=16, fps=5, frameskip=2, transform=None, action_scaler=None):
         self.frames_per_clip = frames_per_clip
         self.fps = fps
-        self.frameskip = frameskip  # V-JEPA 2-AC's `tubelet_size`
+        self.frameskip = frameskip 
         self.transform = transform
-        self.action_scaler = action_scaler
+        
+        # FIX: Ensure variable name consistency
+        self.scaler = action_scaler 
 
-        # Keyboard actions
         self.KEYBOARD_KEYS =    [f'key.keyboard.{i}' for i in range(1,10)] + \
                                 [f'key.keyboard.{x}' for x in ['w', 'a', 's', 'd', 'space']] + \
                                 [f'key.keyboard.{x}' for x in ['q','f']] + \
@@ -184,15 +178,10 @@ class ProcessVPT:
                                 [f'key.keyboard.{x}' for x in ['escape']] + \
                                 [f'key.keyboard.{x}' for x in ['left.shift', 'right.shift', 'left.control', ]] 
         
-        # **EDIT THIS LIST** for mouse buttons
-        self.MOUSE_BUTTONS = [0, 1, 2]  # Left, Right, Middle buttons
-        
-        # Hotbar has 9 slots (0-8)
-        self.HOTBAR_SIZE = 9 #hotbar is not an input but a state
-
+        self.MOUSE_BUTTONS = [0, 1, 2]
+        self.HOTBAR_SIZE = 9
 
     def __call__(self, sample):
-        """Processes a single decoded sample."""
         if sample is None:
             return None
 
@@ -201,76 +190,61 @@ class ProcessVPT:
             actions_df = sample['actions_df']
             key = sample['__key__']
 
-            # --- 1. Video Frame Sampling (from DROID `loadvideo_decord`) ---
+            # --- 1. Frame Sampling ---
             vfps = vr.get_avg_fps()
             fpc = self.frames_per_clip
             target_fps = self.fps if self.fps is not None else vfps
-            
-            # Calculate frame step size to achieve target FPS
             fstp = ceil(vfps / target_fps)
-            
-            # Total number of frames needed *before* sampling
             nframes = int(fpc * fstp)
             
             vlen_total = len(vr)
             alen_total = len(actions_df)
 
-            # Handle 6001 frames vs 6000 actions
-            # We expect N actions for N+1 frames (e.g., 6000 actions, 6001 frames)
-            # The N actions correspond to frames 0...N-1
-            # The last frame (N) has no action data
-            if vlen_total != alen_total + 1:
-                 logger.debug(f"Skipping video: {key}, frame/action mismatch "
-                              f"({vlen_total} frames vs {alen_total} actions)")
+            # Loosened check: Actions usually match frames or are off by 1
+            if abs(vlen_total - alen_total) > 2:
                  return None
 
-            # Usable length is the number of actions (e.g., 6000)
-            # We can sample frames from index 0 to alen_total - 1
-            vlen_usable = alen_total 
-
+            vlen_usable = min(vlen_total, alen_total)
             if vlen_usable < nframes:
-                logger.debug(f"Skipping short video: {key}, {vlen_usable=}, {nframes=}")
                 return None
             
-            # Sample a random window (end frame, start frame)
-            # `high` is exclusive, so `vlen_usable + 1` makes the max
-            # possible `ef` equal to `vlen_usable` (e.g., 6000)
+            # Sample random window
             ef = np.random.randint(nframes, vlen_usable + 1) 
             sf = ef - nframes
             
-            # Get the indices of frames to sample
             indices = np.arange(sf, sf + nframes, fstp).astype(np.int64)
+            indices = indices[indices < vlen_usable]
             
-            # Ensure indices are within bounds
-            indices = indices[indices < vlen_usable] # Max index is vlen_usable - 1
             if len(indices) < fpc:
-                 logger.debug(f"Skipping video (not enough frames after sampling): {key}")
                  return None
-            indices = indices[:fpc]  # Ensure exactly `frames_per_clip`
+            indices = indices[:fpc]
 
-            # Load the video frames (buffer)
+            # --- 2. Load Data ---
             vr.seek(0)
             buffer = vr.get_batch(indices).asnumpy()  # (T, H, W, C)
-
-            # --- 2. Action Processing (from DROID `loadvideo_decord`) ---
-    
-            # 2.1. Get states corresponding to the sampled video frames
-            sampled_states_df = actions_df.iloc[indices]
             
-            # 2.2. Sub-sample *both* the states AND the video buffer by `frameskip`
-            sub_sampled_states_df = sampled_states_df.iloc[::self.frameskip] # 100 states
-            sub_sampled_buffer = buffer[::self.frameskip] # 100 frames
-            
-            # 2.3. Calculate action diffs from the sub-sampled states
-            # This takes 100 states and returns 99 actions
-            vpt_actions_np = self.vpt_states_to_diffs(sub_sampled_states_df)
+            # Get the raw sequence of actions corresponding to frames
+            # We do NOT subsample the DF yet, we need the intermediate rows for aggregation
+            raw_window_df = actions_df.iloc[indices].reset_index(drop=True)
 
-            # --- 3. Video Transform ---
+            # --- 3. Action Aggregation (The Fix) ---
+            # We pass the full window DF and the frameskip.
+            # returns (T_subsampled - 1, D)
+            vpt_actions_np = self.vpt_states_to_diffs(raw_window_df, self.frameskip)
+
+            # --- 4. Subsample Video and States ---
+            # Video: We pick every k-th frame to match the tubelet start
+            sub_sampled_buffer = buffer[::self.frameskip]
+            
+            # States (Yaw/Pitch): We pick every k-th state
+            # Note: We need one more state than action to calculate the last diff pair
+            sub_sampled_states_df = raw_window_df.iloc[::self.frameskip]
+
+            # --- 5. Transform ---
             if self.transform:
-                # Apply transform to the *sub-sampled* buffer
                 sub_sampled_buffer = self.transform(sub_sampled_buffer)  
             
-            # --- 4. Prepare Final Output ---
+            # --- 6. Final Tensors ---
             actions_tensor = torch.from_numpy(vpt_actions_np).float()
             
             state_cols = ['yaw', 'pitch'] 
@@ -283,115 +257,113 @@ class ProcessVPT:
                 "states": states_tensor
             }
 
-
         except Exception as e:
-            logger.warning(f"Error processing sample {sample.get('__key__', 'N/A')}: {e}")
+            logger.warning(f"Error processing {sample.get('__key__', 'N/A')}: {e}")
             return None
 
-    def vpt_states_to_diffs(self, states_df):
+    def vpt_states_to_diffs(self, window_df, skip):
         """
-        Calculates action "diffs" from a DataFrame of states.
-        This is the critical adaptation for VPT data, which uses
-        object columns for 'mouse' and 'keyboard'.
-        
-        Takes T states and returns (T-1) actions.
+        Aggregates actions over the 'skip' window.
+        window_df: DataFrame of length T (e.g., 16)
+        skip: int (e.g., 2)
+        Returns: numpy array of shape (T/skip - 1, ActionDim)
         """
         
-        # --- 1. Continuous states that need diffs (camera angle) ---
-        # Get (T,) arrays
-        yaw = states_df['yaw'].values
-        pitch = states_df['pitch'].values
+        # 1. Determine number of resulting action steps
+        # If we have 16 frames and skip 2, we have 8 tubelets.
+        # We need transitions between them, so 7 actions.
+        n_steps = (len(window_df) // skip) - 1
         
-        # Get (T-1,) arrays of diffs
-        yaw_diff = (yaw[1:] - yaw[:-1] + np.pi) % (2 * np.pi) - np.pi
-        pitch_diff = (pitch[1:] - pitch[:-1] + np.pi) % (2 * np.pi) - np.pi
+        # Arrays to hold results
+        mouse_dx_aggr = np.zeros(n_steps)
+        mouse_dy_aggr = np.zeros(n_steps)
+        yaw_diffs = np.zeros(n_steps)
+        pitch_diffs = np.zeros(n_steps)
+        
+        key_presses = np.zeros((n_steps, len(self.KEYBOARD_KEYS)), dtype=np.float32)
+        mouse_presses = np.zeros((n_steps, len(self.MOUSE_BUTTONS)), dtype=np.float32)
+        hotbar_one_hot = np.zeros((n_steps, self.HOTBAR_SIZE), dtype=np.float32)
+        gui_open = np.zeros(n_steps, dtype=np.float32)
 
-        # --- 2. Continuous actions that are already diffs (mouse dx, dy) ---
-        # Get (T,) Series of dicts
-        mouse_states = states_df['mouse']
-        
-        # Get (T-1,) arrays by taking diffs from the first T-1 states
-        mouse_dx = mouse_states.apply(lambda m: m.get('dx', 0.0)).values[:-1]
-        mouse_dy = mouse_states.apply(lambda m: m.get('dy', 0.0)).values[:-1]
-        
-        # --- A. Stack all continuous actions for normalization ---
+        # Loop over the tubelet windows
+        for i in range(n_steps):
+            # The indices in the raw window covering this transition
+            # If skip=2:
+            # i=0 -> start_idx=0, end_idx=2 (covers frame 0, 1)
+            # i=1 -> start_idx=2, end_idx=4 (covers frame 2, 3)
+            start_idx = i * skip
+            next_start_idx = (i + 1) * skip
+            
+            # Slice the dataframe for this specific tubelet duration
+            chunk = window_df.iloc[start_idx : next_start_idx]
+            
+            # --- A. Continuous Aggregation ---
+            
+            # 1. Yaw/Pitch (Absolute coordinates)
+            # We take the diff between the START of this chunk and the START of next chunk
+            curr_yaw = window_df.iloc[start_idx]['yaw']
+            next_yaw = window_df.iloc[next_start_idx]['yaw']
+            yaw_diffs[i] = (next_yaw - curr_yaw + np.pi) % (2 * np.pi) - np.pi
+
+            curr_pitch = window_df.iloc[start_idx]['pitch']
+            next_pitch = window_df.iloc[next_start_idx]['pitch']
+            pitch_diffs[i] = (next_pitch - curr_pitch + np.pi) % (2 * np.pi) - np.pi
+            
+            # 2. Mouse Delta (Relative velocities)
+            # We must SUM the deltas occurring inside the chunk
+            chunk_mouse = chunk['mouse']
+            dx_sum = sum(m.get('dx', 0.0) for m in chunk_mouse)
+            dy_sum = sum(m.get('dy', 0.0) for m in chunk_mouse)
+            mouse_dx_aggr[i] = dx_sum
+            mouse_dy_aggr[i] = dy_sum
+
+            # --- B. Discrete Aggregation (Logical OR) ---
+            
+            # Collect all keys pressed in ANY frame within this chunk
+            chunk_keys = set()
+            for k_state in chunk['keyboard']:
+                chunk_keys.update(k_state.get('keys', []))
+            
+            for k_idx, key_name in enumerate(self.KEYBOARD_KEYS):
+                if key_name in chunk_keys:
+                    key_presses[i, k_idx] = 1.0
+            
+            # Collect all mouse buttons pressed
+            chunk_buttons = set()
+            for m_state in chunk['mouse']:
+                chunk_buttons.update(m_state.get('buttons', []))
+                
+            for b_idx, btn_name in enumerate(self.MOUSE_BUTTONS):
+                if btn_name in chunk_buttons:
+                    mouse_presses[i, b_idx] = 1.0
+
+            # --- C. State-based (Hotbar/GUI) ---
+            # Usually take the state at the start of the transition
+            # Alternatively, you could use 'mode' (most frequent), but start is standard
+            start_row = window_df.iloc[start_idx]
+            
+            if 'hotbar' in start_row:
+                hb_idx = int(start_row['hotbar'])
+                if 0 <= hb_idx < self.HOTBAR_SIZE:
+                    hotbar_one_hot[i, hb_idx] = 1.0
+            
+            if 'isGuiOpen' in start_row:
+                gui_open[i] = float(start_row['isGuiOpen'])
+
+        # --- D. Final Assembly ---
         continuous_actions = np.stack([
-            mouse_dx,
-            mouse_dy,
-            yaw_diff,
-            pitch_diff
+            mouse_dx_aggr, mouse_dy_aggr, yaw_diffs, pitch_diffs
         ], axis=1)
 
-        # --- B. Apply the scaler IF it was provided ---
         if self.scaler is not None:
-            try:
-                continuous_actions = self.scaler.transform(continuous_actions)
-            except Exception as e:
-                logger.error(f"Failed to transform actions with scaler: {e}")
-                continuous_actions = np.zeros_like(continuous_actions)
-        
-        # --- 3. Discrete (Keyboard) - Multi-Hot Encoding ---
-        # Get (T-1,) Series of dicts
-        keyboard_states = states_df['keyboard'].values[:-1]
-        
-        # Create a (T-1, num_keys) zero array
-        key_presses_np = np.zeros((len(keyboard_states), len(self.KEYBOARD_KEYS)), dtype=np.float32)
-        
-        # Iterate and fill the multi-hot vector
-        for i, k_state in enumerate(keyboard_states):
-            pressed_keys = k_state.get('keys', []) # Get list of pressed keys
-            for j, key_name in enumerate(self.KEYBOARD_KEYS):
-                if key_name in pressed_keys:
-                    key_presses_np[i, j] = 1.0
+            continuous_actions = self.scaler.transform(continuous_actions)
 
-        # --- 4. Discrete (Mouse Buttons) - Multi-Hot Encoding ---
-        # Get (T-1,) Series of dicts
-        mouse_btn_states = states_df['mouse'].values[:-1]
-        
-        # Create a (T-1, num_buttons) zero array
-        mouse_presses_np = np.zeros((len(mouse_btn_states), len(self.MOUSE_BUTTONS)), dtype=np.float32)
-        
-        # Iterate and fill
-        for i, m_state in enumerate(mouse_btn_states):
-            pressed_buttons = m_state.get('buttons', []) 
-            for j, button_name in enumerate(self.MOUSE_BUTTONS):
-                if button_name in pressed_buttons:
-                    mouse_presses_np[i, j] = 1.0
-
-        # ---
-        # START OF FIX
-        # ---
-        
-        # Helper variable for the number of action vectors we're creating
-        num_actions = len(mouse_btn_states) # This is (T-1)
-
-        # --- 5. Discrete (Hotbar) - One-Hot Encoding ---
-        if 'hotbar' in states_df.columns:
-            hotbar_indices = states_df['hotbar'].values[:-1]
-            hotbar_one_hot_np = np.zeros((num_actions, self.HOTBAR_SIZE), dtype=np.float32)
-            hotbar_one_hot_np[np.arange(num_actions), hotbar_indices] = 1.0
-        else:
-            # 'hotbar' column is missing. Create a default vector of all zeros.
-            hotbar_one_hot_np = np.zeros((num_actions, self.HOTBAR_SIZE), dtype=np.float32)
-
-        # --- 6. Discrete (GUI Open) - Binary ---
-        if 'isGuiOpen' in states_df.columns:
-            is_gui_open_np = states_df['isGuiOpen'].values[:-1].astype(np.float32)
-        else:
-            # 'isGuiOpen' column is missing. Default to 0.0 (GUI is closed).
-            is_gui_open_np = np.zeros(num_actions, dtype=np.float32)
-
-        # ---
-        # END OF FIX
-        # ---
-
-        # --- 7. Concatenate all actions into a single vector ---
         actions = np.concatenate([
-            continuous_actions, # (T-1, 4) normalized block
-            key_presses_np,
-            mouse_presses_np,
-            hotbar_one_hot_np,
-            is_gui_open_np[:, np.newaxis]
+            continuous_actions,
+            key_presses,
+            mouse_presses,
+            hotbar_one_hot,
+            gui_open[:, np.newaxis]
         ], axis=1)
         
         return actions.astype(np.float32)
