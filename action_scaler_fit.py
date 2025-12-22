@@ -1,3 +1,5 @@
+import sys
+sys.path.append('vjepa2')
 import logging
 import joblib
 import torch
