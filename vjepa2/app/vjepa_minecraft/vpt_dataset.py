@@ -11,7 +11,7 @@ import torch.utils.data
 import webdataset as wds
 from decord import VideoReader, cpu
 from torchvision import transforms as T
-from utils import modify_keyboard_on_change
+from app.vjepa_minecraft.utils import modify_keyboard_on_change
 
 # --- Setup ---
 logger = getLogger(__name__)
