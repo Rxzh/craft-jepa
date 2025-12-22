@@ -288,7 +288,7 @@ class ProcessVPT:
             logger.warning(f"Error processing sample {sample.get('__key__', 'N/A')}: {e}")
             return None
 
-    def vpt_states_to_diffs(self, states_df):
+def vpt_states_to_diffs(self, states_df):
         """
         Calculates action "diffs" from a DataFrame of states.
         This is the critical adaptation for VPT data, which uses
@@ -296,13 +296,6 @@ class ProcessVPT:
         
         Takes T states and returns (T-1) actions.
         """
-
-        states_df['next_hotbar'] = states_df['hotbar'].shift(-1)
-        states_df['hotbar_changed'] = (states_df['hotbar'] != states_df['next_hotbar']) & states_df['next_hotbar'].notna()
-        states_df['keyboard'] = states_df.apply(modify_keyboard_on_change, axis=1) # this change hotbar changes from wheel to key press
-        states_df = states_df.drop(columns=['next_hotbar', 'hotbar_changed'])
-
-
         
         # --- 1. Continuous states that need diffs (camera angle) ---
         # Get (T,) arrays
@@ -310,12 +303,8 @@ class ProcessVPT:
         pitch = states_df['pitch'].values
         
         # Get (T-1,) arrays of diffs
-        yaw_diff = yaw[1:] - yaw[:-1]
-        pitch_diff = pitch[1:] - pitch[:-1]
-        
-        # Handle angle wrap-around (e.g., -pi to +pi)
-        yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
-        pitch_diff = (pitch_diff + np.pi) % (2 * np.pi) - np.pi
+        yaw_diff = (yaw[1:] - yaw[:-1] + np.pi) % (2 * np.pi) - np.pi
+        pitch_diff = (pitch[1:] - pitch[:-1] + np.pi) % (2 * np.pi) - np.pi
 
         # --- 2. Continuous actions that are already diffs (mouse dx, dy) ---
         # Get (T,) Series of dicts
@@ -324,9 +313,8 @@ class ProcessVPT:
         # Get (T-1,) arrays by taking diffs from the first T-1 states
         mouse_dx = mouse_states.apply(lambda m: m.get('dx', 0.0)).values[:-1]
         mouse_dy = mouse_states.apply(lambda m: m.get('dy', 0.0)).values[:-1]
-
+        
         # --- A. Stack all continuous actions for normalization ---
-        # Shape will be (T-1, 4)
         continuous_actions = np.stack([
             mouse_dx,
             mouse_dy,
@@ -335,14 +323,12 @@ class ProcessVPT:
         ], axis=1)
 
         # --- B. Apply the scaler IF it was provided ---
-        if self.action_scaler is not None:
+        if self.scaler is not None:
             try:
-                continuous_actions = self.action_scaler.transform(continuous_actions)
+                continuous_actions = self.scaler.transform(continuous_actions)
             except Exception as e:
                 logger.error(f"Failed to transform actions with scaler: {e}")
-                # Handle error, e.g., return zeros or raise
                 continuous_actions = np.zeros_like(continuous_actions)
-
         
         # --- 3. Discrete (Keyboard) - Multi-Hot Encoding ---
         # Get (T-1,) Series of dicts
@@ -367,14 +353,16 @@ class ProcessVPT:
         
         # Iterate and fill
         for i, m_state in enumerate(mouse_btn_states):
-            # Use 'buttons' for held keys. Use 'newButtons' for single-tick presses
             pressed_buttons = m_state.get('buttons', []) 
             for j, button_name in enumerate(self.MOUSE_BUTTONS):
                 if button_name in pressed_buttons:
                     mouse_presses_np[i, j] = 1.0
 
-
-        # Helper variable for the number of action vectors
+        # ---
+        # START OF FIX
+        # ---
+        
+        # Helper variable for the number of action vectors we're creating
         num_actions = len(mouse_btn_states) # This is (T-1)
 
         # --- 5. Discrete (Hotbar) - One-Hot Encoding ---
@@ -393,10 +381,13 @@ class ProcessVPT:
             # 'isGuiOpen' column is missing. Default to 0.0 (GUI is closed).
             is_gui_open_np = np.zeros(num_actions, dtype=np.float32)
 
+        # ---
+        # END OF FIX
+        # ---
+
         # --- 7. Concatenate all actions into a single vector ---
-        # Note the change: continuous_actions is now first
         actions = np.concatenate([
-            continuous_actions, # This is the (T-1, 4) normalized block
+            continuous_actions, # (T-1, 4) normalized block
             key_presses_np,
             mouse_presses_np,
             hotbar_one_hot_np,
