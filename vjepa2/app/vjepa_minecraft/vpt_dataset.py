@@ -288,7 +288,7 @@ class ProcessVPT:
             logger.warning(f"Error processing sample {sample.get('__key__', 'N/A')}: {e}")
             return None
 
-def vpt_states_to_diffs(self, states_df):
+    def vpt_states_to_diffs(self, states_df):
         """
         Calculates action "diffs" from a DataFrame of states.
         This is the critical adaptation for VPT data, which uses
