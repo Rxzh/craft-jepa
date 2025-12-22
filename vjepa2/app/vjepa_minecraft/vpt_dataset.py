@@ -18,6 +18,8 @@ logger = getLogger(__name__)
 torch.manual_seed(0)
 np.random.seed(0)
 
+VPT_ACTION_DIM = 36
+
 # --------------------------------------------------------------------------
 # 1. Main Data Loader Initialization Function (Mirrors your template)
 # --------------------------------------------------------------------------
@@ -32,7 +34,7 @@ def init_vpt_dataloader(
     world_size=1,
     frameskip=2,  # Corresponds to `tubelet_size`
     drop_last=True,
-    num_workers=10,
+    num_workers=4,
     pin_mem=True,
     persistent_workers=True,
     action_scaler=None,
@@ -77,7 +79,7 @@ def init_vpt_dataloader(
     )
 
     # --- 1.3. Build the WebDataset Pipeline ---
-    dataset = wds.WebDataset(shard_urls)
+    dataset = wds.WebDataset(shard_urls, resampled=False)
     
     # For multi-epoch training, repeat the dataset
     dataset = dataset.repeat()
@@ -137,6 +139,12 @@ def decode_sample(sample):
         
         # This DataFrame will have object columns for 'mouse' and 'keyboard'
         actions_df = pd.DataFrame(action_list)
+
+        # --- FIX: Apply Keyboard Modifier ---
+        # This ensures hotbar changes are registered as key presses
+        if not actions_df.empty:
+            actions_df['keyboard'] = actions_df.apply(modify_keyboard_on_change, axis=1)
+
         sample['actions_df'] = actions_df
 
         # --- 2. Decode MP4 (Video) ---
@@ -167,8 +175,6 @@ class ProcessVPT:
         self.fps = fps
         self.frameskip = frameskip 
         self.transform = transform
-        
-        # FIX: Ensure variable name consistency
         self.scaler = action_scaler 
 
         self.KEYBOARD_KEYS =    [f'key.keyboard.{i}' for i in range(1,10)] + \
@@ -180,6 +186,8 @@ class ProcessVPT:
         
         self.MOUSE_BUTTONS = [0, 1, 2]
         self.HOTBAR_SIZE = 9
+        
+        self.total_dim = 4 + len(self.KEYBOARD_KEYS) + len(self.MOUSE_BUTTONS) + self.HOTBAR_SIZE + 1
 
     def __call__(self, sample):
         if sample is None:
