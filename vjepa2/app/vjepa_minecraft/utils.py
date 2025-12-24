@@ -143,7 +143,7 @@ def init_video_model(
     pred_is_frame_causal=True,
     use_activation_checkpointing=False,
     return_all_tokens=False,
-    action_embed_dim=7,
+    action_embed_dim=38,
     use_extrinsics=False,
     old_pred=False,
 ):
@@ -258,33 +258,20 @@ def init_opt(
 
 def modify_keyboard_on_change(row):
     """
-    Checks if the 'hotbar_changed' flag is True for this row.
-    If it is, it adds the appropriate keypress to the 'keys' list.
+    If the 'inject_hotbar_key' column (calculated in decode_sample) 
+    contains a value, add it to the keyboard keys list.
     """
-    # Get the keyboard dictionary. Must make a copy to avoid modifying
-    # the original DataFrame during the .apply() operation.
+    # Defensive copy
     new_keyboard_dict = row['keyboard'].copy()
+    keys_list = new_keyboard_dict.get('keys', [])
     
-    if row['hotbar_changed']:
-        # The new hotbar value is in 'next_hotbar'.
-        # We convert to int just in case it's a float (e.g., 8.0)
-        new_hotbar_val = int(row['next_hotbar'])
-        
-        # Format the key string based on your example (e.g., "key.keyboard.8")
-        key_to_press = f"key.keyboard.{new_hotbar_val}"
-        
-        # Get the current list of keys, making a copy to modify it
-        new_keys_list = new_keyboard_dict.get('keys', []).copy()
-        
-
-        if key_to_press in new_keys_list:
-            # If the key is already present, we don't add it again
-            return new_keyboard_dict
-        
-        # Add the new keypress
-        new_keys_list.append(key_to_press)
-        
-        # Update the dictionary
-        new_keyboard_dict['keys'] = new_keys_list
-        
+    # We will pass the specific key string to inject via a new column
+    key_to_inject = row.get('inject_hotbar_key', None)
+    
+    if key_to_inject:
+        # Avoid duplicates
+        if key_to_inject not in keys_list:
+            keys_list.append(key_to_inject)
+            new_keyboard_dict['keys'] = keys_list
+            
     return new_keyboard_dict

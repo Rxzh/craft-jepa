@@ -140,9 +140,31 @@ def decode_sample(sample):
         # This DataFrame will have object columns for 'mouse' and 'keyboard'
         actions_df = pd.DataFrame(action_list)
 
-        # --- FIX: Apply Keyboard Modifier ---
-        # This ensures hotbar changes are registered as key presses
-        if not actions_df.empty:
+        if not actions_df.empty and 'hotbar' in actions_df.columns:
+            # A. Convert hotbar to numeric, filling NaNs with 0
+            actions_df['hotbar'] = pd.to_numeric(actions_df['hotbar'], errors='coerce').fillna(0).astype(int)
+            
+            # B. Calculate shift to find changes
+            # We compare row[t] vs row[t-1]
+            # 'shift(1)' moves values down, so row[t] has the value of row[t-1]
+            actions_df['prev_hotbar'] = actions_df['hotbar'].shift(1).fillna(actions_df['hotbar'])
+            
+            # C. Logic: If current != prev, we need to press the key for 'current'
+            # We create a mask for rows where change happened
+            change_mask = actions_df['hotbar'] != actions_df['prev_hotbar']
+            
+            # D. Create a column 'inject_hotbar_key'
+            # Default is None
+            actions_df['inject_hotbar_key'] = None
+            
+            # Only where mask is True, set the key string (e.g., "key.keyboard.1")
+            # Note: Minecraft hotbar is 0-8 internally usually, but keys are 1-9. 
+            # Check your dataset: if hotbar is 0-8, add 1. If 1-9, keep as is.
+            # Assuming dataset is 0-8:
+            actions_df.loc[change_mask, 'inject_hotbar_key'] = \
+                actions_df.loc[change_mask, 'hotbar'].apply(lambda x: f"key.keyboard.{int(x)+1}" if 0 <= x < 9 else None)
+                
+            # E. Apply the modifier (only updates rows where inject_hotbar_key is not None)
             actions_df['keyboard'] = actions_df.apply(modify_keyboard_on_change, axis=1)
 
         sample['actions_df'] = actions_df
