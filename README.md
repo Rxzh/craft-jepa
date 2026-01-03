@@ -23,10 +23,10 @@ pip install -r requirements.txt
 
 ### Training in 3 Steps
 
-**1. Fit Action Scaler:**
+**1. Fit Action Scaler (Optimized):**
 ```bash
-# Edit action_scaler_fit.py to set your VPT data path
-python action_scaler_fit.py
+# Fast version: ~10 minutes for 100K samples
+python action_scaler_fit_optimized.py --data_path "VPT/shard-*.tar"
 ```
 
 **2. Update Config:**
@@ -57,16 +57,20 @@ export VPT_DATA_PATH=/path/to/vpt-shards-*.tar
 
 - **[FINE_TUNING_GUIDE.md](FINE_TUNING_GUIDE.md)** - Complete step-by-step guide with troubleshooting
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed architecture explanation and data flow diagrams
+- **[ACTION_SCALER_GUIDE.md](ACTION_SCALER_GUIDE.md)** - Action scaler optimization for large-scale datasets
+- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Quick reference card with common commands
 
 ## Repository Structure
 
 ```
 craft-jepa/
-├── action_scaler_fit.py          # Fit StandardScaler for action normalization
-├── train_vjepa_vpt.sh            # Automated training script
-├── FINE_TUNING_GUIDE.md          # Complete fine-tuning guide
-├── ARCHITECTURE.md               # Architecture documentation
-└── vjepa2/                       # Main codebase
+├── action_scaler_fit.py              # Original scaler fitting (slow)
+├── action_scaler_fit_optimized.py    # Optimized scaler fitting (recommended)
+├── train_vjepa_vpt.sh                # Automated training script
+├── FINE_TUNING_GUIDE.md              # Complete fine-tuning guide
+├── ARCHITECTURE.md                   # Architecture documentation
+├── ACTION_SCALER_GUIDE.md            # Action scaler optimization guide
+└── vjepa2/                           # Main codebase
     ├── app/
     │   ├── vjepa_minecraft/      # VPT training pipeline
     │   │   ├── train.py          # Action-conditioned training loop

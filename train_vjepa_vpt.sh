@@ -68,12 +68,17 @@ echo ""
 # Step 4: Fit action scaler
 echo "Step 4: Fitting action scaler..."
 if [ ! -f "$SCALER_PATH" ]; then
-    echo "  Running action_scaler_fit.py..."
+    echo "  Running optimized action scaler fitting..."
+    echo "  (Using 100K samples - takes ~10 minutes)"
 
-    # Update DATA_PATH in action_scaler_fit.py
-    sed -i "s|^DATA_PATH = .*|DATA_PATH = \"$VPT_DATA_PATH\"|" action_scaler_fit.py
-
-    python action_scaler_fit.py
+    # Use optimized version with sensible defaults
+    python action_scaler_fit_optimized.py \
+        --data_path "$VPT_DATA_PATH" \
+        --output "$SCALER_PATH" \
+        --max_samples 100000 \
+        --max_shards 20 \
+        --batch_size 128 \
+        --num_workers 8
 
     if [ -f "$SCALER_PATH" ]; then
         echo "  ✓ Action scaler fitted successfully"
@@ -83,6 +88,7 @@ if [ ! -f "$SCALER_PATH" ]; then
     fi
 else
     echo "  ✓ Action scaler already exists"
+    echo "  (Delete $SCALER_PATH to refit)"
 fi
 echo ""
 
