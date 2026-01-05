@@ -64,11 +64,10 @@ def fit_action_scaler_fast(data_path, scaler_save_path):
     # Calculate Mean: E[X]
     mean = total_sum / total_count
     
-    # Calculate Variance: E[X^2] - (E[X])^2
-    # Note: We use the population variance formula (div by N) to match sklearn's default
+    # Calculate variance: E[X^2] - (E[X])^2
     variance = (total_sq_sum / total_count) - (mean ** 2)
     
-    # Handle potential negative zero due to precision issues
+    # handle precision issues
     variance = torch.clamp(variance, min=0.0)
     std_dev = torch.sqrt(variance)
 

@@ -12,7 +12,8 @@ webdataset
 timm
 transformers
 peft
-decord
+#decord #unsupported on macos
+decord2 # Uncomment this line for macos
 pandas
 einops
 beartype
@@ -24,3 +25,6 @@ scikit-image
 ftfy
 jupyter
 notebook==6
+joblib
+scikit-learn
+tqdm
