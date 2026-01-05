@@ -91,10 +91,8 @@ def fit_action_scaler_optimized(
         # Sample uniformly across dataset
         indices = np.linspace(0, len(all_shards)-1, max_shards, dtype=int)
         selected_shards = [all_shards[i] for i in indices]
-        shard_pattern = "{" + ",".join(selected_shards) + "}"
         logger.info(f"Using {max_shards} / {len(all_shards)} shards (sampled uniformly)")
     else:
-        shard_pattern = data_path
         selected_shards = all_shards
         logger.info(f"Using all {len(all_shards)} shards")
 
@@ -105,7 +103,7 @@ def fit_action_scaler_optimized(
     logger.info(f"  Target samples: {max_samples:,}")
 
     scaler_fit_loader, _ = init_vpt_dataloader(
-        data_path=shard_pattern,
+        data_path=selected_shards,  # Pass list of shard paths directly
         batch_size=batch_size,
         action_scaler=None,  # Don't apply scaler during fitting
         frames_per_clip=64,  # Use more frames per clip for efficiency

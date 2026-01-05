@@ -41,15 +41,21 @@ def init_vpt_dataloader(
 ):
     """
     Initializes the WebDataset-based data loader for VPT.
-    
-    Args:
-        data_path (str): A glob string for the .tar shards 
-                         (e.g., "data/vpt-shards-{000000..000123}.tar")
-    """
-    logger.info(f"Initializing VPT WebDataset loader from: {data_path}")
 
-    # Find all the shard files
-    shard_urls = sorted(glob.glob(data_path))
+    Args:
+        data_path (str or list): Either a glob pattern string for the .tar shards
+                                 (e.g., "data/vpt-shards-*.tar") or a list of
+                                 explicit shard file paths.
+    """
+    # Handle both glob pattern (string) and list of shard paths
+    if isinstance(data_path, list):
+        shard_urls = sorted(data_path)
+        logger.info(f"Initializing VPT WebDataset loader with {len(shard_urls)} shards")
+    else:
+        logger.info(f"Initializing VPT WebDataset loader from: {data_path}")
+        # Find all the shard files
+        shard_urls = sorted(glob.glob(data_path))
+
     if not shard_urls:
         logger.error(f"No shards found at path: {data_path}")
         raise FileNotFoundError(f"No .tar files found at {data_path}")
