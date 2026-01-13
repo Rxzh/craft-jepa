@@ -13,6 +13,9 @@ tasks_per_node: 8
 data:
   batch_size: 8
   crop_size: 256
+  # Path to the pre-fitted action scaler (from action_scaler_fit_optimized.py)
+  # This normalizes the 4 continuous action dimensions (mouse_dx, mouse_dy, yaw_diff, pitch_diff)
+  action_scaler_path: /path/to/vpt_action_scaler.pkl
 
 #Use a glob string for all your WebDataset shards
   datasets:
@@ -74,9 +77,14 @@ model:
   use_activation_checkpointing: true
   #--- CRITICAL ---
   use_extrinsics: false # VPT data does not have this
-  action_embed_dim: 13
-  #Must match the output of vpt_states_to_diffs
-  #e.g., 1(dx) + 1(dy) + 1(dyaw) + 1(dpitch) + 9(keys) = 13
+  action_embed_dim: 38
+  # Must match the output of vpt_dataset.py ProcessVPT:
+  # 4 continuous (mouse_dx, mouse_dy, yaw_diff, pitch_diff)
+  # + 21 keyboard keys (multi-hot)
+  # + 3 mouse buttons (multi-hot)
+  # + 9 hotbar slots (one-hot)
+  # + 1 gui_open (binary)
+  # = 38 total dimensions
   #--- END CRITICAL ---
   use_rope: true
 

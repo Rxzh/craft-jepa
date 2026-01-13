@@ -143,6 +143,20 @@ def main(args, resume_preempt=False):
     num_workers = cfgs_data.get("num_workers", 1)
     persistent_workers = cfgs_data.get("persistent_workers", True)
 
+    # --- VPT Edit: Action Scaler ---
+    # Load the pre-fitted action scaler for normalizing continuous actions
+    action_scaler_path = cfgs_data.get("action_scaler_path", None)
+    action_scaler = None
+    if action_scaler_path:
+        import joblib
+        action_scaler = joblib.load(action_scaler_path)
+        logger.info(f"Loaded action scaler from {action_scaler_path}")
+        logger.info(f"  Mean: {action_scaler.mean_}")
+        logger.info(f"  Scale: {action_scaler.scale_}")
+    else:
+        logger.warning("No action_scaler_path specified. Continuous actions will NOT be normalized.")
+    # --- End VPT Edit ---
+
     # -- DATA AUGS
     cfgs_data_aug = args.get("data_aug")
     horizontal_flip = cfgs_data_aug.get("horizontal_flip", False)
@@ -287,6 +301,7 @@ def main(args, resume_preempt=False):
         pin_mem=pin_mem,
         persistent_workers=persistent_workers,
         rank=rank,
+        action_scaler=action_scaler,  # Normalize continuous actions
     )
     
     # unsupervised_sampler will be None, this is expected.
@@ -460,16 +475,27 @@ def main(args, resume_preempt=False):
                 # sample['video_frames'] is already (B, T, C, H, W) from our loader
                 # We permute to (B, C, T, H, W) as expected by DROID's `forward_target`
                 clips = sample['video_frames'].to(device, non_blocking=True).permute(0, 2, 1, 3, 4)
-                
+
                 # sample['actions'] is (B, T_actions, D_actions)
                 actions = sample['actions'].to(device, dtype=torch.float, non_blocking=True)
-                
+
                 # sample['states'] is (B, T_states, D_states)
                 states = sample['states'].to(device, dtype=torch.float, non_blocking=True)
-                
+
+                # Pad states to match action_embed_dim
+                # VPT states are 2D (yaw, pitch), but the AC predictor's state_encoder
+                # expects action_embed_dim dimensions. We pad with zeros to match.
+                if states.shape[-1] < actions.shape[-1]:
+                    padding = torch.zeros(
+                        states.shape[0], states.shape[1],
+                        actions.shape[-1] - states.shape[-1],
+                        device=device, dtype=states.dtype
+                    )
+                    states = torch.cat([states, padding], dim=-1)
+
                 # We don't have extrinsics, so we pass None
-                extrinsics = None 
-                
+                extrinsics = None
+
                 return (clips, actions, states, extrinsics)
             # --- End VPT Edit ---
 
