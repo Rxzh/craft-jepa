@@ -1,0 +1,21 @@
+1. (first) https://gemini.google.com/app/2d7fdb861fc727f1
+2. (then) https://gemini.google.com/app/41b9e03b5562c764
+
+
+Next steps given by Claude:
+
+1. Update the config with your paths:
+folder: /your/output/path
+datasets:
+- /your/VPT/shard-{000000..NNNNNN}.tar
+pretrain_checkpoint: /your/vjepa_vit-l-16.pt
+action_scaler_path: /your/vpt_action_scaler.pkl
+
+2. Launch training:
+cd vjepa2
+python app/main.py --fname configs/train/vitl16/minecraft-256px-8f.yaml --device cuda:0 --debugmode
+# here, remove --device for 8 GPUs and --debugmode.
+
+3. Monitor logs for:
+- "Loaded action scaler from..." message
+- Loss values decreasing (no NaN/Inf)
