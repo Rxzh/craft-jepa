@@ -21,6 +21,8 @@ module load arch/h100
 module load intel-mkl/2020.4
 module load anaconda-py3/2024.06
 conda activate pytorch-gpu-2.4.0+py3.11.9
+conda activate /lustre/fswork/projects/rech/dxe/ueq71sr/pytorch-gpu-1.11+py3.9.12-ryzh
+
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
