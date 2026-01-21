@@ -303,10 +303,25 @@ def main(args, resume_preempt=False):
                        "is not expected to return one. This may cause errors.")
     # --- End VPT Edit ---
     
-    _dlen = len(unsupervised_loader)
+    # --- VPT Edit ---
+    # WebDataset is an IterableDataset and doesn't support len().
+    # We must rely on the configured `ipe` (iterations per epoch) value.
+    try:
+        _dlen = len(unsupervised_loader)
+    except TypeError:
+        _dlen = None
+        logger.info("WebDataset loader does not support len(), using configured ipe.")
+
     if ipe is None:
-        ipe = _dlen
-    logger.info(f"iterations per epoch/dataset length: {ipe}/{_dlen}")
+        if _dlen is not None:
+            ipe = _dlen
+        else:
+            raise ValueError(
+                "Cannot determine iterations per epoch: WebDataset has no len() "
+                "and 'ipe' is not set in config. Please set optimization.ipe in your config."
+            )
+    logger.info(f"iterations per epoch: {ipe}" + (f" (dataset length: {_dlen})" if _dlen else ""))
+    # --- End VPT Edit ---
 
     # -- init optimizer and scheduler
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
