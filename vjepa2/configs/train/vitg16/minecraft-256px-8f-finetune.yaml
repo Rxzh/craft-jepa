@@ -1,0 +1,74 @@
+#--- VPT-JEPA Action-Conditioned Fine-Tuning Config ---
+# Production config for 4x H100 GPUs on Jean-Zay (single node)
+# CRITICAL: enc_lr_scale=0.0 freezes encoder (only predictor trains)
+
+app: vjepa_minecraft
+cpus_per_task: 24
+folder: ${VJEPA_OUTPUT_DIR}
+mem_per_gpu: 220G
+nodes: 1
+tasks_per_node: 4
+
+data:
+  batch_size: 8
+  crop_size: 256
+  action_scaler_path: ${VJEPA_ACTION_SCALER_PATH}
+  datasets:
+    - ${VJEPA_DATA_PATH}
+  dataset_fpcs:
+    - 16
+  fps: 5
+  num_workers: 12
+  patch_size: 16
+  pin_mem: true
+  tubelet_size: 2
+
+data_aug:
+  auto_augment: false
+  horizontal_flip: false
+  motion_shift: false
+  random_resize_aspect_ratio: [0.75, 1.33]
+  random_resize_scale: [0.3, 1.0]
+  reprob: 0.0
+
+loss:
+  auto_steps: 2
+  loss_exp: 1.0
+  normalize_reps: true
+  reg_coeff: 0.0
+
+meta:
+  dtype: bfloat16
+  eval_freq: 100
+  load_predictor: false
+  pretrain_checkpoint: ${VJEPA_PRETRAIN_CHECKPOINT}
+  context_encoder_key: target_encoder
+  target_encoder_key: target_encoder
+  resume_checkpoint: null
+  save_every_freq: 1
+  seed: 239
+  use_sdpa: true
+
+model:
+  model_name: vit_giant_xformers
+  pred_depth: 24
+  pred_embed_dim: 1024
+  pred_is_frame_causal: true
+  pred_num_heads: 16
+  uniform_power: true
+  use_activation_checkpointing: true
+  use_extrinsics: false
+  action_embed_dim: 38
+  use_rope: true
+
+optimization:
+  anneal: 15
+  epochs: 100
+  final_lr: 0.0
+  final_weight_decay: 0.04
+  ipe: 12500
+  lr: 0.000425
+  start_lr: 0.000075
+  warmup: 5
+  weight_decay: 0.04
+  enc_lr_scale: 0.0

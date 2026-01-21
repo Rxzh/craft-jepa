@@ -81,7 +81,7 @@ def process_main(rank, fname, world_size, devices):
     if rank == 0:
         pprint.PrettyPrinter(indent=4).pprint(params)
         folder = params["folder"]
-        params_path = os.path.join(folder, "params-pretrain.yaml")
+        params_path = os.path.join(folder, "params-train.yaml")
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         with open(params_path, "w") as f:
