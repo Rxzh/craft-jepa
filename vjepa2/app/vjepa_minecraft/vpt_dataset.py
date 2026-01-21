@@ -2,6 +2,8 @@ import io
 import json
 import glob
 from logging import getLogger
+
+import braceexpand
 from math import ceil
 
 import numpy as np
@@ -53,8 +55,13 @@ def init_vpt_dataloader(
         logger.info(f"Initializing VPT WebDataset loader with {len(shard_urls)} shards")
     else:
         logger.info(f"Initializing VPT WebDataset loader from: {data_path}")
-        # Find all the shard files
-        shard_urls = sorted(glob.glob(data_path))
+        # Support both brace expansion (e.g., shard-{000000..001648}.tar) and glob patterns (e.g., shard-*.tar)
+        if '{' in data_path and '..' in data_path:
+            # Use braceexpand for patterns like shard-{000000..001648}.tar
+            shard_urls = sorted(list(braceexpand.braceexpand(data_path)))
+        else:
+            # Use glob for patterns like shard-*.tar
+            shard_urls = sorted(glob.glob(data_path))
 
     if not shard_urls:
         logger.error(f"No shards found at path: {data_path}")
