@@ -1,11 +1,11 @@
 #--- VPT-JEPA Action-Conditioned Post-Training Config ---
-#Based on the DROID AC config and V-JEPA ViT-L/16 model.
+#Based on the DROID AC config and V-JEPA ViT-G/16 model.
 #Note: action_embed_dim must match your vpt_states_to_diffs output.
 #--- SLURM / Infrastructure ---
 #(Update for your cluster)
-app: vpt_jepa
+app: vpt_minecraft
 cpus_per_task: 12
-folder: /your_folder/vpt_jepa/vit_l_16-256px-16f
+folder: /your_folder/vpt_jepa/vitg16-256px-8f
 mem_per_gpu: 220G
 nodes: 4
 tasks_per_node: 8
@@ -13,6 +13,9 @@ tasks_per_node: 8
 data:
   batch_size: 8
   crop_size: 256
+  # Path to the pre-fitted action scaler (from action_scaler_fit_optimized.py)
+  # This normalizes the 4 continuous action dimensions (mouse_dx, mouse_dy, yaw_diff, pitch_diff)
+  action_scaler_path: /path/to/vpt_action_scaler.pkl
 
 #Use a glob string for all your WebDataset shards
   datasets:
@@ -53,8 +56,8 @@ meta:
   eval_freq: 100
   load_predictor: false
   #--- CHECKPOINT ---
-  #Path to your pretrained V-JEPA (e.g., ViT-L/16) checkpoint
-  pretrain_checkpoint: /your_vjepa2_checkpoints/vjepa_vit-l-16.pt
+  #Path to your pretrained V-JEPA ViT-G/16 checkpoint
+  pretrain_checkpoint: /your_vjepa2_checkpoints/vitg.pt
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   #--- END CHECKPOINT ---
@@ -65,7 +68,7 @@ meta:
 
 #--- Model Config ---
 model:
-  model_name: vit_l_16 # For V-JEPA ViT-L/16
+  model_name: vit_giant_xformers # For V-JEPA ViT-G/16
   pred_depth: 24
   pred_embed_dim: 1024 # Predictor embed dim
   pred_is_frame_causal: true
@@ -74,9 +77,14 @@ model:
   use_activation_checkpointing: true
   #--- CRITICAL ---
   use_extrinsics: false # VPT data does not have this
-  action_embed_dim: 13
-  #Must match the output of vpt_states_to_diffs
-  #e.g., 1(dx) + 1(dy) + 1(dyaw) + 1(dpitch) + 9(keys) = 13
+  action_embed_dim: 38
+  # Must match the output of vpt_dataset.py ProcessVPT:
+  # 4 continuous (mouse_dx, mouse_dy, yaw_diff, pitch_diff)
+  # + 21 keyboard keys (multi-hot)
+  # + 3 mouse buttons (multi-hot)
+  # + 9 hotbar slots (one-hot)
+  # + 1 gui_open (binary)
+  # = 38 total dimensions
   #--- END CRITICAL ---
   use_rope: true
 
