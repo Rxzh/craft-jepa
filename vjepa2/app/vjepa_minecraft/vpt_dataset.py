@@ -117,13 +117,13 @@ def init_vpt_dataloader(
     )
 
     # --- 1.3. Build the WebDataset Pipeline ---
-    dataset = wds.WebDataset(shard_urls, resampled=False)
+    dataset = wds.WebDataset(shard_urls, resampled=True)
     
     # For multi-epoch training, repeat the dataset
     dataset = dataset.repeat()
     
     # Shuffle the order of shards (buffer_size=100)
-    dataset = dataset.shuffle(100)
+    dataset = dataset.shuffle(1000)
 
     # Decode the raw bytes from the .tar file
     dataset = dataset.map(decode_sample)
