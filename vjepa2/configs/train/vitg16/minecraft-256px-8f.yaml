@@ -2,25 +2,29 @@
 #Based on the DROID AC config and V-JEPA ViT-G/16 model.
 #Note: action_embed_dim must match your vpt_states_to_diffs output.
 #--- SLURM / Infrastructure ---
-#(Update for your cluster)
+# Environment variables (set in SLURM script or shell):
+#   VJEPA_OUTPUT_DIR: Output directory for checkpoints/logs (default: $SCRATCH/vpt_jepa/vitg16-256px-8f)
+#   VJEPA_DATA_PATH: WebDataset shard path pattern (default: $WORK/petrus/craft-jepa/VPT/shard-*.tar)
+#   VJEPA_ACTION_SCALER_PATH: Path to action scaler pickle (default: $WORK/petrus/craft-jepa/my_scaler_400k.pkl)
+#   VJEPA_PRETRAIN_CHECKPOINT: Path to pretrained V-JEPA checkpoint (default: $WORK/petrus/craft-jepa/weights/vitg.pt)
 app: vpt_minecraft
-cpus_per_task: 12
-folder: /your_folder/vpt_jepa/vitg16-256px-8f
+cpus_per_task: 24
+folder: ${VJEPA_OUTPUT_DIR}
 mem_per_gpu: 220G
-nodes: 4
-tasks_per_node: 8
+nodes: 1
+tasks_per_node: 1
 #--- Data Config ---
 data:
   batch_size: 8
   crop_size: 256
   # Path to the pre-fitted action scaler (from action_scaler_fit_optimized.py)
   # This normalizes the 4 continuous action dimensions (mouse_dx, mouse_dy, yaw_diff, pitch_diff)
-  action_scaler_path: /path/to/vpt_action_scaler.pkl
+  action_scaler_path: ${VJEPA_ACTION_SCALER_PATH}
 
 #Use a glob string for all your WebDataset shards
   datasets:
     # dataset paths
-    - /path/to/your/vpt-shards-{000000..000123}.tar
+    - ${VJEPA_DATA_PATH}
   dataset_fpcs:
   - 16  # Corresponds to frames_per_clip
   fps: 5
@@ -57,7 +61,7 @@ meta:
   load_predictor: false
   #--- CHECKPOINT ---
   #Path to your pretrained V-JEPA ViT-G/16 checkpoint
-  pretrain_checkpoint: /your_vjepa2_checkpoints/vitg.pt
+  pretrain_checkpoint: ${VJEPA_PRETRAIN_CHECKPOINT}
   context_encoder_key: target_encoder
   target_encoder_key: target_encoder
   #--- END CHECKPOINT ---

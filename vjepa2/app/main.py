@@ -5,13 +5,37 @@
 
 import argparse
 import multiprocessing as mp
+import os
 import pprint
+import re
 from pathlib import Path
 
 import yaml
 
 from app.scaffold import main as app_main
 from src.utils.distributed import init_distributed
+
+
+def expand_env_vars(obj):
+    """Recursively expand environment variables in config values.
+
+    Supports ${VAR} and $VAR syntax. If VAR is not set, the original string is kept.
+    """
+    if isinstance(obj, str):
+        # Match ${VAR} or $VAR patterns
+        pattern = r'\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)'
+
+        def replacer(match):
+            var_name = match.group(1) or match.group(2)
+            return os.environ.get(var_name, match.group(0))
+
+        return re.sub(pattern, replacer, obj)
+    elif isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(item) for item in obj]
+    else:
+        return obj
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--fname", type=str, help="name of config file to load", default="configs.yaml")
@@ -32,8 +56,6 @@ parser.add_argument(
 
 
 def process_main(rank, fname, world_size, devices):
-    import os
-
     os.environ["CUDA_VISIBLE_DEVICES"] = str(devices[rank].split(":")[-1])
 
     import logging
@@ -48,11 +70,12 @@ def process_main(rank, fname, world_size, devices):
 
     logger.info(f"called-params {fname}")
 
-    # Load config
+    # Load config and expand environment variables
     params = None
     with open(fname, "r") as y_file:
         params = yaml.load(y_file, Loader=yaml.FullLoader)
-        logger.info("loaded params...")
+        params = expand_env_vars(params)
+        logger.info("loaded params (with env vars expanded)...")
 
     # Log config
     if rank == 0:
