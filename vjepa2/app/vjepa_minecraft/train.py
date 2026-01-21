@@ -325,6 +325,8 @@ def main(args, resume_preempt=False):
     )
 
     # Initialize validation dataloader
+    # Use fewer workers and disable persistent_workers for validation to reduce memory
+    # Validation only runs once per epoch, so we don't need the overhead
     (val_loader, _) = init_vpt_val_dataloader(
         shard_urls=val_shards,
         batch_size=batch_size,
@@ -332,10 +334,10 @@ def main(args, resume_preempt=False):
         frameskip=tubelet_size,
         fps=fps,
         crop_size=crop_size,
-        num_workers=num_workers,
+        num_workers=min(2, num_workers),  # Use at most 2 workers for validation
         world_size=world_size,
         pin_mem=pin_mem,
-        persistent_workers=persistent_workers,
+        persistent_workers=False,  # Don't keep workers alive between epochs
         rank=rank,
         action_scaler=action_scaler,
     )
