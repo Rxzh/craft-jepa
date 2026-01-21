@@ -289,13 +289,6 @@ def main(args, resume_preempt=False):
         frameskip=tubelet_size, # Pass tubelet_size as frameskip
         fps=fps,
         crop_size=crop_size, # Pass crop_size for transforms
-        # --- DROID params, not used by VPT loader ---
-        # camera_views=camera_views,
-        # camera_frame=camera_frame,
-        # stereo_view=stereo_view,
-        transform=transform, # --- VPT Edit --- Pass the augmentations
-        # collator=video_collator,
-        # --- End DROID params ---
         num_workers=num_workers,
         world_size=world_size,
         pin_mem=pin_mem,
