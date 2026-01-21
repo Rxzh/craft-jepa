@@ -24,8 +24,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--debugmode",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Setting this to true will not spin up new processes. "
     "The main code runs the main process, which makes it easier to \
     debug with checkpointing.",
