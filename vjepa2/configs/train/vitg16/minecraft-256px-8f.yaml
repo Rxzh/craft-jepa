@@ -7,7 +7,7 @@
 #   VJEPA_DATA_PATH: WebDataset shard path pattern (default: $WORK/petrus/craft-jepa/VPT/shard-*.tar)
 #   VJEPA_ACTION_SCALER_PATH: Path to action scaler pickle (default: $WORK/petrus/craft-jepa/my_scaler_400k.pkl)
 #   VJEPA_PRETRAIN_CHECKPOINT: Path to pretrained V-JEPA checkpoint (default: $WORK/petrus/craft-jepa/weights/vitg.pt)
-app: vpt_minecraft
+app: vjepa_minecraft
 cpus_per_task: 24
 folder: ${VJEPA_OUTPUT_DIR}
 mem_per_gpu: 220G
