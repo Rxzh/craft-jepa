@@ -22,6 +22,25 @@ np.random.seed(0)
 
 VPT_ACTION_DIM = 36
 
+
+# --------------------------------------------------------------------------
+# Picklable helper functions for transforms (required for num_workers > 0)
+# --------------------------------------------------------------------------
+
+def _numpy_to_tensor(x):
+    """Convert numpy array (T, H, W, C) to tensor (T, C, H, W)."""
+    return torch.from_numpy(x).permute(0, 3, 1, 2)
+
+
+def _normalize_to_float(x):
+    """Normalize tensor to [0, 1] range."""
+    return x.float() / 255.0
+
+
+def _is_not_none(x):
+    """Filter function for WebDataset select."""
+    return x is not None
+
 # --------------------------------------------------------------------------
 # 1. Main Data Loader Initialization Function (Mirrors your template)
 # --------------------------------------------------------------------------
@@ -72,12 +91,13 @@ def init_vpt_dataloader(
     # --- 1.1. Define Video Transformation ---
     # Your plan: Resize shortest side to 256, then 256x256 crop.
     # We also add normalization required by V-JEPA (standard ImageNet mean/std).
+    # Note: Using module-level functions instead of lambdas for picklability with num_workers > 0
     vjepa_transform = T.Compose([
         # Input from ProcessVPT is (T, H, W, C) numpy array
-        T.Lambda(lambda x: torch.from_numpy(x).permute(0, 3, 1, 2)),  # (T, C, H, W)
+        T.Lambda(_numpy_to_tensor),  # (T, C, H, W)
         T.Resize(crop_size, antialias=True),  # Resize shortest side to crop_size
         T.CenterCrop(crop_size),              # Crop 256x256 from center
-        T.Lambda(lambda x: x.float() / 255.0), # Normalize to [0, 1]
+        T.Lambda(_normalize_to_float),  # Normalize to [0, 1]
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
@@ -113,7 +133,7 @@ def init_vpt_dataloader(
     dataset = dataset.map(vpt_processor)
     
     # Filter out any samples that failed to load or process
-    dataset = dataset.select(lambda x: x is not None)
+    dataset = dataset.select(_is_not_none)
 
     # --- 1.4. Create the PyTorch DataLoader ---
     data_loader = torch.utils.data.DataLoader(
