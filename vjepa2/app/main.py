@@ -56,7 +56,13 @@ parser.add_argument(
 
 
 def process_main(rank, fname, world_size, devices):
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(devices[rank].split(":")[-1])
+    # Set CUDA device - handle SLURM mode specially
+    if "SLURM_LOCALID" in os.environ:
+        # SLURM mode: use SLURM_LOCALID for local GPU assignment
+        local_rank = int(os.environ["SLURM_LOCALID"])
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(devices[rank].split(":")[-1])
 
     import logging
 
@@ -88,7 +94,11 @@ def process_main(rank, fname, world_size, devices):
             yaml.dump(params, f)
 
     # Init distributed (access to comm between GPUS on same machine)
-    world_size, rank = init_distributed(rank_and_world_size=(rank, world_size))
+    # In SLURM mode, pass (None, None) to let init_distributed auto-detect from SLURM env
+    if "SLURM_PROCID" in os.environ:
+        world_size, rank = init_distributed(rank_and_world_size=(None, None))
+    else:
+        world_size, rank = init_distributed(rank_and_world_size=(rank, world_size))
     logger.info(f"Running... (rank: {rank}/{world_size})")
 
     # Launch the app with loaded config
@@ -101,11 +111,9 @@ if __name__ == "__main__":
         process_main(rank=0, fname=args.fname, world_size=1, devices=["cuda:0"])
     elif "SLURM_PROCID" in os.environ:
         # Running under SLURM with srun - SLURM handles process spawning
+        # process_main will auto-detect rank/world_size and GPU from SLURM env vars
         rank = int(os.environ["SLURM_PROCID"])
-        world_size = int(os.environ["SLURM_NTASKS"])
-        # SLURM sets CUDA_VISIBLE_DEVICES or we use LOCAL_RANK
-        local_rank = int(os.environ.get("SLURM_LOCALID", rank))
-        process_main(rank=rank, fname=args.fname, world_size=world_size, devices=[f"cuda:{local_rank}"])
+        process_main(rank=rank, fname=args.fname, world_size=None, devices=[])
     else:
         # Local multi-GPU training without SLURM
         num_gpus = len(args.devices)
