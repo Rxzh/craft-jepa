@@ -16,7 +16,7 @@ data:
   datasets:
     - ${VJEPA_DATA_PATH}
   dataset_fpcs:
-    - 16
+    - 32
   fps: 5
   num_workers: 4
   patch_size: 16
