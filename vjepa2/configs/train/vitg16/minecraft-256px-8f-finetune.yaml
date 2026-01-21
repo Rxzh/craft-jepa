@@ -5,7 +5,7 @@
 app: vjepa_minecraft
 cpus_per_task: 24
 folder: ${VJEPA_OUTPUT_DIR}
-mem_per_gpu: 220G
+mem_per_gpu: 110G
 nodes: 1
 tasks_per_node: 4
 
@@ -18,7 +18,7 @@ data:
   dataset_fpcs:
     - 16
   fps: 5
-  num_workers: 12
+  num_workers: 4
   patch_size: 16
   pin_mem: true
   tubelet_size: 2
