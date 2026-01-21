@@ -33,7 +33,7 @@ export OUTPUT_DIR=$SCRATCH/vpt_jepa/vitg16-256px-8f
 cd $WORK/petrus/craft-jepa/vjepa2
 
 # Run training
-srun app/main.py \
+srun python app/main.py \
     --fname configs/train/vitg16/minecraft-256px-8f.yaml \
     --debugmode
 
