@@ -32,6 +32,9 @@ export OUTPUT_DIR=$SCRATCH/vpt_jepa/vitg16-256px-8f
 # Navigate to vjepa2 directory
 cd $WORK/petrus/craft-jepa/vjepa2
 
+# Add vjepa2 to Python path for module imports
+export PYTHONPATH=$PWD:$PYTHONPATH
+
 # Run training
 srun python app/main.py \
     --fname configs/train/vitg16/minecraft-256px-8f.yaml \
