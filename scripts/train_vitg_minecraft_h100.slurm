@@ -24,16 +24,16 @@ module load python/3.11.5
 mkdir -p logs
 
 # Set paths - update these for your setup
-export WEIGHTS_DIR=$WORK/weights
-export VPT_DATA_PATH=$SCRATCH/vpt-shards/vpt-shards-{000000..000123}.tar
-export ACTION_SCALER_PATH=$WORK/vpt_action_scaler.pkl
+export WEIGHTS_DIR=weights
+export VPT_DATA_PATH=VPT/vpt-shards-{000000..000123}.tar
+export ACTION_SCALER_PATH=my_scaler_400k.pkl
 export OUTPUT_DIR=$SCRATCH/vpt_jepa/vitg16-256px-8f
 
 # Navigate to vjepa2 directory
-cd $WORK/craft-jepa/vjepa2
+cd $WORK/petrus/craft-jepa/vjepa2
 
 # Run training
-python app/main.py \
+srun app/main.py \
     --fname configs/train/vitg16/minecraft-256px-8f.yaml \
     --debugmode
 
