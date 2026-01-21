@@ -32,6 +32,7 @@ cd $WORK/petrus/craft-jepa/vjepa2
 export PYTHONPATH=$PWD:$PYTHONPATH
 
 srun python app/main.py \
-    --fname configs/train/vitg16/minecraft-256px-8f-finetune.yaml
+    --fname configs/train/vitg16/minecraft-256px-8f-finetune.yaml \
+    --devices cuda:0 cuda:1 cuda:2 cuda:3
 
 echo "Fine-tuning completed"
