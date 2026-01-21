@@ -148,7 +148,10 @@ def main(args, resume_preempt=False):
     patch_size = cfgs_data.get("patch_size")
     pin_mem = cfgs_data.get("pin_mem", False)
     num_workers = cfgs_data.get("num_workers", 1)
-    persistent_workers = cfgs_data.get("persistent_workers", True)
+    # Disable persistent_workers by default to reduce memory usage
+    # Each worker holds a shuffle buffer (~300MB with buffer=100)
+    # With persistent_workers=True, this memory is held across epochs
+    persistent_workers = cfgs_data.get("persistent_workers", False)
 
     # --- VPT Edit: Action Scaler ---
     # Load the pre-fitted action scaler for normalizing continuous actions

@@ -174,8 +174,10 @@ def init_vpt_dataloader(
     # For multi-epoch training, repeat the dataset
     dataset = dataset.repeat()
     
-    # Shuffle the order of shards (buffer_size=100)
-    dataset = dataset.shuffle(1000)
+    # Shuffle the order of shards
+    # IMPORTANT: Keep buffer small to avoid OOM. Each video sample is ~3MB,
+    # so buffer of 100 = ~300MB per worker. With 1000 it was ~3GB per worker!
+    dataset = dataset.shuffle(100)
 
     # Decode the raw bytes from the .tar file
     dataset = dataset.map(decode_sample)
