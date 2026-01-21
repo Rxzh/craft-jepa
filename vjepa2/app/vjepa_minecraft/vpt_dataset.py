@@ -2,6 +2,7 @@ import io
 import json
 import glob
 from logging import getLogger
+from typing import Tuple, List, Optional
 
 import braceexpand
 from math import ceil
@@ -21,6 +22,51 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 VPT_ACTION_DIM = 36
+
+
+# --------------------------------------------------------------------------
+# Shard Splitting Utility (Train/Val Split)
+# --------------------------------------------------------------------------
+
+def split_shards_train_val(
+    data_path: str,
+    val_fraction: float = 0.1,
+) -> Tuple[List[str], List[str]]:
+    """
+    Splits shards into train and validation sets deterministically.
+
+    IMPORTANT: This split happens BEFORE rank-based distribution, so all GPUs
+    see the same train/val split. Each GPU will then get its subset of each split.
+
+    Args:
+        data_path: Glob pattern or brace expansion pattern for shard files
+        val_fraction: Fraction of shards to use for validation (default 0.1 = 10%)
+
+    Returns:
+        (train_shards, val_shards): Tuple of sorted lists of shard paths
+    """
+    # Resolve the shard paths
+    if isinstance(data_path, list):
+        shard_urls = sorted(data_path)
+    elif '{' in data_path and '..' in data_path:
+        shard_urls = sorted(list(braceexpand.braceexpand(data_path)))
+    else:
+        shard_urls = sorted(glob.glob(data_path))
+
+    if not shard_urls:
+        raise FileNotFoundError(f"No .tar files found at {data_path}")
+
+    total_shards = len(shard_urls)
+    n_val = max(1, int(total_shards * val_fraction))  # At least 1 shard for val
+    n_train = total_shards - n_val
+
+    # Deterministic split: first n_train for training, last n_val for validation
+    train_shards = shard_urls[:n_train]
+    val_shards = shard_urls[n_train:]
+
+    logger.info(f"Shard split: {n_train} train, {n_val} val (total: {total_shards})")
+
+    return train_shards, val_shards
 
 
 # --------------------------------------------------------------------------
@@ -59,6 +105,7 @@ def init_vpt_dataloader(
     pin_mem=True,
     persistent_workers=True,
     action_scaler=None,
+    shard_urls: Optional[List[str]] = None,
 ):
     """
     Initializes the WebDataset-based data loader for VPT.
@@ -66,10 +113,15 @@ def init_vpt_dataloader(
     Args:
         data_path (str or list): Either a glob pattern string for the .tar shards
                                  (e.g., "data/vpt-shards-*.tar") or a list of
-                                 explicit shard file paths.
+                                 explicit shard file paths. Ignored if shard_urls is provided.
+        shard_urls: Optional pre-computed list of shard URLs (e.g., from split_shards_train_val).
+                   If provided, data_path is ignored.
     """
-    # Handle both glob pattern (string) and list of shard paths
-    if isinstance(data_path, list):
+    # Use pre-computed shard list if provided, otherwise resolve from data_path
+    if shard_urls is not None:
+        shard_urls = sorted(shard_urls)
+        logger.info(f"Initializing VPT WebDataset loader with {len(shard_urls)} pre-split shards")
+    elif isinstance(data_path, list):
         shard_urls = sorted(data_path)
         logger.info(f"Initializing VPT WebDataset loader with {len(shard_urls)} shards")
     else:
@@ -147,9 +199,93 @@ def init_vpt_dataloader(
     )
 
     logger.info("VPT WebDataset data loader created")
-    
+
     # Return None for sampler, as it's integrated into the WebDataset pipeline
-    return data_loader, None 
+    return data_loader, None
+
+
+def init_vpt_val_dataloader(
+    shard_urls: List[str],
+    batch_size: int,
+    frames_per_clip: int = 16,
+    fps: int = 5,
+    crop_size: int = 256,
+    rank: int = 0,
+    world_size: int = 1,
+    frameskip: int = 2,
+    num_workers: int = 4,
+    pin_mem: bool = True,
+    persistent_workers: bool = True,
+    action_scaler=None,
+    val_iterations: Optional[int] = None,
+):
+    """
+    Initializes a validation dataloader for VPT.
+
+    Key differences from training dataloader:
+    - No shuffle (deterministic evaluation)
+    - No repeat (single pass through data)
+    - Uses pre-split shard list (not a glob pattern)
+
+    Args:
+        shard_urls: List of shard file paths (already split for validation)
+        val_iterations: Optional limit on number of batches per validation epoch.
+                       If None, iterates through all available data once.
+    """
+    if not shard_urls:
+        logger.warning("No validation shards provided. Returning None.")
+        return None, None
+
+    logger.info(f"Initializing VPT validation loader with {len(shard_urls)} shards")
+
+    # Handle distributed training: shard URLs across ranks
+    if world_size > 1:
+        shard_urls = shard_urls[rank::world_size]
+        logger.info(f"Rank {rank}/{world_size}: assigned {len(shard_urls)} val shards")
+
+    if not shard_urls:
+        logger.warning(f"Rank {rank} has no validation shards after distribution.")
+        return None, None
+
+    # --- Validation Transform (no augmentation, just resize + center crop + normalize) ---
+    val_transform = T.Compose([
+        T.Lambda(_numpy_to_tensor),
+        T.Resize(crop_size, antialias=True),
+        T.CenterCrop(crop_size),
+        T.Lambda(_normalize_to_float),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    # --- Instantiate the Processor ---
+    vpt_processor = ProcessVPT(
+        frames_per_clip=frames_per_clip,
+        fps=fps,
+        frameskip=frameskip,
+        transform=val_transform,
+        action_scaler=action_scaler,
+    )
+
+    # --- Build the WebDataset Pipeline (NO shuffle, NO repeat for validation) ---
+    dataset = wds.WebDataset(shard_urls, resampled=False)
+
+    # Decode and process
+    dataset = dataset.map(decode_sample)
+    dataset = dataset.map(vpt_processor)
+    dataset = dataset.select(_is_not_none)
+
+    # --- Create the PyTorch DataLoader ---
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=(num_workers > 0) and persistent_workers,
+        drop_last=False,  # Don't drop last batch for validation
+    )
+
+    logger.info(f"VPT validation data loader created (val_iterations={val_iterations})")
+
+    return data_loader, val_iterations
 
 
 # --------------------------------------------------------------------------

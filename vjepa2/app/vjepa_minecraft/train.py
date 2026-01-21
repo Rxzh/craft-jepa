@@ -33,8 +33,12 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 # --- VPT Edit ---
-# Import our new VPT data loader
-from app.vjepa_minecraft.vpt_dataset import init_vpt_dataloader as init_data
+# Import our new VPT data loader with train/val split support
+from app.vjepa_minecraft.vpt_dataset import (
+    init_vpt_dataloader as init_data,
+    init_vpt_val_dataloader,
+    split_shards_train_val,
+)
 # from app.vjepa_droid.droid import init_data # Original DROID loader
 # --- End VPT Edit ---
 
@@ -122,9 +126,12 @@ def main(args, resume_preempt=False):
     # -- DATA
     cfgs_data = args.get("data")
     datasets = cfgs_data.get("datasets", [])
-    dataset_path = datasets[0] # For VPT, this should be a glob string like "path/to/shards-*.tar"
+    dataset_path = datasets[0]  # For VPT, this should be a glob string like "path/to/shards-*.tar"
     dataset_fpcs = cfgs_data.get("dataset_fpcs")
     max_num_frames = max(dataset_fpcs)
+    # --- VPT Edit: Validation Split ---
+    val_fraction = cfgs_data.get("val_fraction", 0.1)  # Default 10% for validation
+    # --- End VPT Edit ---
     
     # --- VPT Edit ---
     # These parameters are DROID-specific and not used by our VPT loader
@@ -228,6 +235,18 @@ def main(args, resume_preempt=False):
         ("%d", "dataload-time(ms)"),
         mode="+a",
     )
+    # --- VPT Edit: Validation CSV Logger ---
+    val_log_file = os.path.join(folder, f"val_log_r{rank}.csv")
+    val_csv_logger = CSVLogger(
+        val_log_file,
+        ("%d", "epoch"),
+        ("%.5f", "val_loss"),
+        ("%.5f", "val_jloss"),
+        ("%.5f", "val_sloss"),
+        ("%d", "val_batches"),
+        mode="+a",
+    )
+    # --- End VPT Edit ---
 
     # -- init model
     encoder, predictor = init_video_model(
@@ -280,27 +299,57 @@ def main(args, resume_preempt=False):
 
     # -- init data-loaders/samplers
     # --- VPT Edit ---
+    # Split shards into train/val BEFORE rank distribution (so all ranks see same split)
+    train_shards, val_shards = split_shards_train_val(
+        data_path=dataset_path,
+        val_fraction=val_fraction,
+    )
+    logger.info(f"Train/Val split: {len(train_shards)} train shards, {len(val_shards)} val shards")
+
     # Call our new init_data (aliased from init_vpt_dataloader)
     # It returns (loader, None) as WebDataset handles its own sampling.
     (unsupervised_loader, unsupervised_sampler) = init_data(
-        data_path=dataset_path,
+        data_path=dataset_path,  # Not used when shard_urls is provided
         batch_size=batch_size,
         frames_per_clip=max_num_frames,
-        frameskip=tubelet_size, # Pass tubelet_size as frameskip
+        frameskip=tubelet_size,  # Pass tubelet_size as frameskip
         fps=fps,
-        crop_size=crop_size, # Pass crop_size for transforms
+        crop_size=crop_size,  # Pass crop_size for transforms
         num_workers=num_workers,
         world_size=world_size,
         pin_mem=pin_mem,
         persistent_workers=persistent_workers,
         rank=rank,
         action_scaler=action_scaler,  # Normalize continuous actions
+        shard_urls=train_shards,  # Use pre-split train shards
     )
-    
+
+    # Initialize validation dataloader
+    (val_loader, _) = init_vpt_val_dataloader(
+        shard_urls=val_shards,
+        batch_size=batch_size,
+        frames_per_clip=max_num_frames,
+        frameskip=tubelet_size,
+        fps=fps,
+        crop_size=crop_size,
+        num_workers=num_workers,
+        world_size=world_size,
+        pin_mem=pin_mem,
+        persistent_workers=persistent_workers,
+        rank=rank,
+        action_scaler=action_scaler,
+    )
+    if val_loader is not None:
+        logger.info("Validation dataloader initialized successfully")
+    else:
+        logger.warning("Validation dataloader is None - validation will be skipped")
+
     # unsupervised_sampler will be None, this is expected.
     if unsupervised_sampler is not None:
-        logger.warning("Received a sampler from init_data, but WebDataset loader "
-                       "is not expected to return one. This may cause errors.")
+        logger.warning(
+            "Received a sampler from init_data, but WebDataset loader "
+            "is not expected to return one. This may cause errors."
+        )
     # --- End VPT Edit ---
     
     # --- VPT Edit ---
@@ -381,7 +430,7 @@ def main(args, resume_preempt=False):
             scheduler.step()
             wd_scheduler.step()
 
-    def save_checkpoint(epoch, path):
+    def save_checkpoint(epoch, path, val_loss=None):
         if rank != 0:
             return
         save_dict = {
@@ -392,6 +441,7 @@ def main(args, resume_preempt=False):
             "target_encoder": target_encoder.state_dict(),
             "epoch": epoch,
             "loss": loss_meter.avg,
+            "val_loss": val_loss,  # VPT Edit: Include validation loss
             "batch_size": batch_size,
             "world_size": world_size,
             "lr": lr,
@@ -649,15 +699,121 @@ def main(args, resume_preempt=False):
             log_stats()
             assert not np.isnan(loss), "loss is nan"
 
+        # --- VPT Edit: Validation Loop ---
+        val_loss = None
+        val_jloss = None
+        val_sloss = None
+        if val_loader is not None:
+            logger.info("Running validation...")
+            val_loss_meter = AverageMeter()
+            val_jloss_meter = AverageMeter()
+            val_sloss_meter = AverageMeter()
+
+            encoder.eval()
+            predictor.eval()
+
+            val_iter = iter(val_loader)
+            val_itr = 0
+            with torch.no_grad():
+                while True:
+                    try:
+                        val_sample = next(val_iter)
+                    except StopIteration:
+                        break
+
+                    # Load validation clips (same structure as training)
+                    val_clips = val_sample["video_frames"].to(device, non_blocking=True).permute(0, 2, 1, 3, 4)
+                    val_actions = val_sample["actions"].to(device, dtype=torch.float, non_blocking=True)
+                    val_states = val_sample["states"].to(device, dtype=torch.float, non_blocking=True)
+
+                    # Pad states to match action_embed_dim
+                    if val_states.shape[-1] < val_actions.shape[-1]:
+                        padding = torch.zeros(
+                            val_states.shape[0],
+                            val_states.shape[1],
+                            val_actions.shape[-1] - val_states.shape[-1],
+                            device=device,
+                            dtype=val_states.dtype,
+                        )
+                        val_states = torch.cat([val_states, padding], dim=-1)
+
+                    val_extrinsics = None
+                    current_batch_size = val_clips.shape[0]
+
+                    # Forward pass (same as training but no gradients)
+                    with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
+                        # Forward target encoder
+                        c = val_clips.permute(0, 2, 1, 3, 4).flatten(0, 1).unsqueeze(2).repeat(1, 1, 2, 1, 1)
+                        h = target_encoder(c)
+                        h = h.view(current_batch_size, max_num_frames, -1, h.size(-1)).flatten(1, 2)
+                        if normalize_reps:
+                            h = F.layer_norm(h, (h.size(-1),))
+
+                        # Forward predictions (teacher forcing)
+                        _z = h[:, :-tokens_per_frame]
+                        _a, _s, _e = val_actions, val_states[:, :-1], val_extrinsics
+                        z_tf = predictor(_z, _a, _s, _e)
+                        if normalize_reps:
+                            z_tf = F.layer_norm(z_tf, (z_tf.size(-1),))
+
+                        # Auto-regressive rollouts
+                        _z = torch.cat([h[:, :tokens_per_frame], z_tf[:, :tokens_per_frame]], dim=1)
+                        for n in range(1, auto_steps):
+                            _a, _s, _e = val_actions[:, : n + 1], val_states[:, : n + 1], val_extrinsics
+                            _z_nxt = predictor(_z, _a, _s, _e)
+                            if normalize_reps:
+                                _z_nxt = F.layer_norm(_z_nxt, (_z_nxt.size(-1),))
+                            _z_nxt = _z_nxt[:, -tokens_per_frame:]
+                            _z = torch.cat([_z, _z_nxt], dim=1)
+                        z_ar = _z[:, tokens_per_frame:]
+
+                        # Compute losses
+                        def val_loss_fn(z, h_target):
+                            _h = h_target[:, tokens_per_frame : z.size(1) + tokens_per_frame]
+                            return torch.mean(torch.abs(z - _h) ** loss_exp) / loss_exp
+
+                        v_jloss = val_loss_fn(z_tf, h)
+                        v_sloss = val_loss_fn(z_ar, h)
+                        v_loss = v_jloss + v_sloss
+
+                    val_loss_meter.update(float(v_loss))
+                    val_jloss_meter.update(float(v_jloss))
+                    val_sloss_meter.update(float(v_sloss))
+                    val_itr += 1
+
+                    if val_itr % log_freq == 0:
+                        logger.info(
+                            f"[Val {epoch + 1}, {val_itr}] loss: {val_loss_meter.avg:.3f} "
+                            f"[{val_jloss_meter.avg:.2f}, {val_sloss_meter.avg:.2f}]"
+                        )
+
+            val_loss = val_loss_meter.avg
+            val_jloss = val_jloss_meter.avg
+            val_sloss = val_sloss_meter.avg
+            logger.info(
+                f"[Val {epoch + 1}] avg loss: {val_loss:.3f} "
+                f"[{val_jloss:.2f}, {val_sloss:.2f}] ({val_itr} batches)"
+            )
+
+            # Log validation metrics to CSV
+            val_csv_logger.log(epoch + 1, val_loss, val_jloss, val_sloss, val_itr)
+
+            # Switch back to training mode
+            encoder.train()
+            predictor.train()
+        # --- End VPT Edit ---
+
         # -- Save Checkpoint
-        logger.info("avg. loss %.3f" % loss_meter.avg)
+        logger.info("avg. train loss %.3f" % loss_meter.avg)
+        if val_loss is not None:
+            logger.info("avg. val loss %.3f" % val_loss)
         # -- Save Last
         if epoch % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):
-            save_checkpoint(epoch + 1, latest_path)
+            save_checkpoint(epoch + 1, latest_path, val_loss=val_loss)
             if save_every_freq > 0 and epoch % save_every_freq == 0:
                 save_every_file = f"e{epoch}.pt"
                 save_every_path = os.path.join(folder, save_every_file)
-                save_checkpoint(epoch + 1, save_every_path)
+                save_checkpoint(epoch + 1, save_every_path, val_loss=val_loss)
 
 # --- VPT Edit ---
 # The original train.py likely had a main() call or was imported.
