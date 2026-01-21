@@ -19,14 +19,15 @@
 module purge
 module load arch/h100
 module load python/3.11.5
+conda activate pytorch-gpu-2.4.0+py3.11.9 
 
 # Create logs directory if it doesn't exist
 mkdir -p logs
 
 # Set paths - update these for your setup
-export WEIGHTS_DIR=weights
-export VPT_DATA_PATH=VPT/vpt-shards-{000000..000123}.tar
-export ACTION_SCALER_PATH=my_scaler_400k.pkl
+export WEIGHTS_DIR=$WORK/petrus/craft-jepa/weights
+export VPT_DATA_PATH=$WORK/petrus/craft-jepa/VPT/shard-{000000..000123}.tar
+export ACTION_SCALER_PATH=$WORK/petrus/craft-jepa/my_scaler_400k.pkl
 export OUTPUT_DIR=$SCRATCH/vpt_jepa/vitg16-256px-8f
 
 # Navigate to vjepa2 directory
