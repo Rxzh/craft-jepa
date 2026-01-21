@@ -85,8 +85,13 @@ def init_vpt_dataloader(
     if not shard_urls:
         logger.error(f"No shards found at path: {data_path}")
         raise FileNotFoundError(f"No .tar files found at {data_path}")
-        
-    logger.info(f"Found {len(shard_urls)} shards.")
+
+    logger.info(f"Found {len(shard_urls)} total shards.")
+
+    # Handle distributed training: shard URLs across ranks
+    if world_size > 1:
+        shard_urls = shard_urls[rank::world_size]
+        logger.info(f"Rank {rank}/{world_size}: assigned {len(shard_urls)} shards")
 
     # --- 1.1. Define Video Transformation ---
     # Your plan: Resize shortest side to 256, then 256x256 crop.
@@ -119,12 +124,6 @@ def init_vpt_dataloader(
     
     # Shuffle the order of shards (buffer_size=100)
     dataset = dataset.shuffle(100)
-
-    # Handle distributed training (DDP)
-    if world_size > 1:
-        # Split shards by node, and samples by worker
-        dataset = dataset.split_by_node(rank, world_size) \
-                         .split_by_worker(wds.worker_id, wds.num_workers)
 
     # Decode the raw bytes from the .tar file
     dataset = dataset.map(decode_sample)

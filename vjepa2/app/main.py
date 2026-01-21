@@ -99,7 +99,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.debugmode:
         process_main(rank=0, fname=args.fname, world_size=1, devices=["cuda:0"])
+    elif "SLURM_PROCID" in os.environ:
+        # Running under SLURM with srun - SLURM handles process spawning
+        rank = int(os.environ["SLURM_PROCID"])
+        world_size = int(os.environ["SLURM_NTASKS"])
+        # SLURM sets CUDA_VISIBLE_DEVICES or we use LOCAL_RANK
+        local_rank = int(os.environ.get("SLURM_LOCALID", rank))
+        process_main(rank=rank, fname=args.fname, world_size=world_size, devices=[f"cuda:{local_rank}"])
     else:
+        # Local multi-GPU training without SLURM
         num_gpus = len(args.devices)
         mp.set_start_method("spawn")
         for rank in range(num_gpus):
