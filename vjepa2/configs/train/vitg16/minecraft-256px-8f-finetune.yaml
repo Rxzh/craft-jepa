@@ -64,7 +64,7 @@ model:
 
 optimization:
   anneal: 15
-  epochs: 100
+  epochs: 300
   final_lr: 0.0
   final_weight_decay: 0.04
   ipe: 500
